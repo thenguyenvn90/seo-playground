@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { getCredentials, getSetting } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import { LOCATIONS, LANGUAGES } from '@/lib/geo-options';
 import SearchForm from '@/components/SearchForm';
 
@@ -147,11 +148,12 @@ function formatDate(iso?: string) {
 // ---- Page ----
 
 export default async function AiOptimizationPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const creds = getCredentials();
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
   const params = await searchParams;
 
-  const defaultLocation = getSetting('default_location') ?? 'France';
-  const defaultLanguage = getSetting('default_language') ?? 'French';
+  const defaultLocation = (await getSetting(userId, 'default_location')) ?? 'France';
+  const defaultLanguage = (await getSetting(userId, 'default_language')) ?? 'French';
 
   const targetValue = (params.target ?? '').trim();
   const targetType = (params.target_type === 'domain' ? 'domain' : 'keyword') as 'keyword' | 'domain';

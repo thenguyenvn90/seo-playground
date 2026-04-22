@@ -3,6 +3,7 @@ import {
   getRelatedKwHistory, saveRelatedKwSearch, getRelatedKwResults,
   type RelatedKwSearchEntry,
 } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import ExportCSVButton from '@/components/ExportCSVButton';
 import { LOCATIONS, LANGUAGES } from '@/lib/geo-options';
 import SearchForm from '@/components/SearchForm';
@@ -84,12 +85,13 @@ function formatDate(ts: number) {
 }
 
 export default async function RelatedKeywordsPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const creds = getCredentials();
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
   const params = await searchParams;
   const historyId = params.history_id;
 
-  const defaultLocation = getSetting('default_location') ?? 'France';
-  const defaultLanguage = getSetting('default_language') ?? 'French';
+  const defaultLocation = (await getSetting(userId, 'default_location')) ?? 'France';
+  const defaultLanguage = (await getSetting(userId, 'default_language')) ?? 'French';
 
   const keyword = params.keyword?.trim() ?? '';
   const location = params.location ?? defaultLocation;
@@ -104,11 +106,11 @@ export default async function RelatedKeywordsPage({ searchParams }: { searchPara
   let activeEntry: RelatedKwSearchEntry | null = null;
 
   if (historyId) {
-    const saved = getRelatedKwResults<RelatedKeywordItem>(historyId);
+    const saved = await getRelatedKwResults<RelatedKeywordItem>(userId, historyId);
     if (saved) {
       items = saved;
       isFromHistory = true;
-      const history = getRelatedKwHistory();
+      const history = await getRelatedKwHistory(userId);
       activeEntry = history.find((e) => e.id === historyId) ?? null;
     } else {
       error = "Cette recherche n'est plus disponible.";
@@ -137,12 +139,12 @@ export default async function RelatedKeywordsPage({ searchParams }: { searchPara
           count: items.length,
           cost,
         };
-        saveRelatedKwSearch(entry, items);
+        await saveRelatedKwSearch(userId, entry, items);
       }
     }
   }
 
-  const history = getRelatedKwHistory();
+  const history = await getRelatedKwHistory(userId);
   const displayKeyword = activeEntry?.keyword ?? keyword;
   const displayLocation = activeEntry?.location ?? location;
   const displayLanguage = activeEntry?.language ?? language;

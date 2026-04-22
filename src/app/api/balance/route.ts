@@ -1,21 +1,27 @@
 import { getCredentials } from '@/lib/db';
+import { getOptionalUserId } from '@/lib/session';
 import { NextResponse } from 'next/server';
 
 interface DFUserResponse {
   tasks?: Array<{ result?: Array<{ money?: { balance?: number } }> }>;
 }
 
-let cachedBalance: string | null = null;
-let cacheExpiry = 0;
+// Per-user cache: one balance per userId. Different users have different
+// DataForSEO accounts, so we cannot share a single cached value.
+const balanceCache = new Map<string, { balance: string; expiresAt: number }>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 export async function GET() {
+  const userId = await getOptionalUserId();
+  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
   const now = Date.now();
-  if (cachedBalance !== null && now < cacheExpiry) {
-    return NextResponse.json({ balance: cachedBalance });
+  const cached = balanceCache.get(userId);
+  if (cached && now < cached.expiresAt) {
+    return NextResponse.json({ balance: cached.balance });
   }
 
-  const creds = getCredentials();
+  const creds = await getCredentials(userId);
   if (!creds) return NextResponse.json({ balance: null });
 
   try {
@@ -26,8 +32,7 @@ export async function GET() {
     if (res.ok) {
       const data = await res.json() as DFUserResponse;
       const balance = (data.tasks?.[0]?.result?.[0]?.money?.balance ?? 0).toFixed(2);
-      cachedBalance = balance;
-      cacheExpiry = now + CACHE_TTL;
+      balanceCache.set(userId, { balance, expiresAt: now + CACHE_TTL });
       return NextResponse.json({ balance });
     }
   } catch {

@@ -4,6 +4,7 @@ import {
   getCredentials, getDomainIntersectionHistory,
   saveDomainIntersectionSearch, getDomainIntersectionResults, getSetting,
 } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import ExportCSVButton from '@/components/ExportCSVButton';
 import { LOCATIONS, LANGUAGES } from '@/lib/geo-options';
 import SearchForm from '@/components/SearchForm';
@@ -80,11 +81,12 @@ function KdBadge({ kd }: { kd: number | undefined }) {
 }
 
 export default async function DomainIntersectionPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const creds = getCredentials();
-  const history = getDomainIntersectionHistory();
-  const defaultLocation = getSetting('default_location') ?? 'France';
-  const defaultLanguage = getSetting('default_language') ?? 'French';
-  const defaultDomain = getSetting('default_domain') ?? '';
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
+  const history = await getDomainIntersectionHistory(userId);
+  const defaultLocation = (await getSetting(userId, 'default_location')) ?? 'France';
+  const defaultLanguage = (await getSetting(userId, 'default_language')) ?? 'French';
+  const defaultDomain = (await getSetting(userId, 'default_domain')) ?? '';
 
   const params = await searchParams;
   const historyId = params.history_id;
@@ -100,7 +102,7 @@ export default async function DomainIntersectionPage({ searchParams }: { searchP
   let cost = 0;
 
   if (historyId) {
-    items = getDomainIntersectionResults<IntersectionItem>(historyId) ?? [];
+    items = (await getDomainIntersectionResults<IntersectionItem>(userId, historyId)) ?? [];
     const entry = history.find((h) => h.id === historyId);
     total = entry?.totalCount ?? items.length;
   } else if (target1 && target2 && creds) {
@@ -110,7 +112,7 @@ export default async function DomainIntersectionPage({ searchParams }: { searchP
       total = result.total;
       cost = result.cost;
       const id = crypto.randomUUID();
-      saveDomainIntersectionSearch({
+      await saveDomainIntersectionSearch(userId, {
         id, ts: Date.now(), target1, target2, location, language,
         count: items.length, totalCount: total, cost,
       }, items);

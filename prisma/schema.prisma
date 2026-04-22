@@ -1,0 +1,397 @@
+// Postgres schema for seo-playground
+// - auth tables (User, Session, Account, Verification) are required by better-auth
+// - every search/history table is scoped by userId with cascading delete
+// - `results Json` columns replace SQLite TEXT+JSON.stringify blobs
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---- better-auth required tables ----
+
+model User {
+  id            String   @id
+  name          String
+  email         String   @unique
+  emailVerified Boolean
+  image         String?
+  createdAt     DateTime
+  updatedAt     DateTime
+  role          String   @default("user")
+
+  sessions Session[]
+  accounts Account[]
+
+  credential   UserCredential?
+  settings     UserSetting[]
+
+  serpSearches                SerpSearch[]
+  kdSearches                  KdSearch[]
+  lfSearches                  LfSearch[]
+  kwOverviewSearches          KwOverviewSearch[]
+  kwDifficultySearches        KwDifficultySearch[]
+  relatedKwSearches           RelatedKwSearch[]
+  rankedKwSearches            RankedKwSearch[]
+  competitorsSearches         CompetitorsSearch[]
+  domainIntersectionSearches  DomainIntersectionSearch[]
+  histRankSearches            HistRankSearch[]
+  backlinksSearches           BacklinksSearch[]
+  refDomainsSearches          RefDomainsSearch[]
+  anchorsSearches             AnchorsSearch[]
+  gridSearches                GridSearch[]
+  instantPageSearches         InstantPageSearch[]
+  onpageTasks                 OnpageTask[]
+  reviewsTasks                ReviewsTask[]
+  redditSearches              RedditSearch[]
+  targetDomains               TargetDomain[]
+  trackedKeywords             TrackedKeyword[]
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime
+  updatedAt DateTime
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime
+  updatedAt             DateTime
+}
+
+model Verification {
+  id         String    @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime?
+  updatedAt  DateTime?
+}
+
+// ---- per-user credentials + settings ----
+
+// DataForSEO credentials: dfsPassword is AES-256-GCM encrypted at rest.
+model UserCredential {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dfsLogin    String
+  dfsPassword String
+  updatedAt   DateTime @updatedAt
+}
+
+// Key/value settings per user (default_location, default_coordinates, default_language,
+// default_domain, rank_tracker_depth, etc.).
+model UserSetting {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  key    String
+  value  String
+
+  @@unique([userId, key])
+}
+
+// ---- search history tables ----
+
+model SerpSearch {
+  id          String   @id
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts          BigInt
+  keyword     String
+  location    String
+  language    String
+  device      String
+  depth       Int
+  resultCount Int
+  items       Json
+  targetHits  Json?
+}
+
+model KdSearch {
+  id          String   @id
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts          BigInt
+  se          String
+  seType      String
+  label       String
+  resultCount Int
+  cost        Float?
+  params      Json
+  items       Json
+}
+
+model LfSearch {
+  id          String   @id
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts          BigInt
+  keyword     String
+  location    String
+  resultCount Int
+  cost        Float?
+  params      Json
+  items       Json
+}
+
+model KwOverviewSearch {
+  id          String   @id
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts          BigInt
+  keywords    Json
+  location    String
+  language    String
+  resultCount Int
+  cost        Float?
+  items       Json
+}
+
+model KwDifficultySearch {
+  id          String   @id
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts          BigInt
+  keywords    Json
+  location    String
+  language    String
+  resultCount Int
+  cost        Float?
+  items       Json
+}
+
+model RelatedKwSearch {
+  id          String   @id
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts          BigInt
+  keyword     String
+  location    String
+  language    String
+  depth       Int
+  resultCount Int
+  cost        Float?
+  items       Json
+}
+
+model RankedKwSearch {
+  id          String   @id
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts          BigInt
+  target      String
+  location    String
+  language    String
+  resultCount Int
+  totalCount  Int
+  cost        Float?
+  items       Json
+}
+
+model CompetitorsSearch {
+  id          String   @id
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts          BigInt
+  target      String
+  location    String
+  language    String
+  resultCount Int
+  cost        Float?
+  items       Json
+}
+
+model DomainIntersectionSearch {
+  id          String   @id
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts          BigInt
+  target1     String
+  target2     String
+  location    String
+  language    String
+  resultCount Int
+  totalCount  Int
+  cost        Float?
+  items       Json
+}
+
+model HistRankSearch {
+  id       String   @id
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts       BigInt
+  target   String
+  location String
+  language String
+  cost     Float?
+  items    Json
+}
+
+model BacklinksSearch {
+  id         String   @id
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts         BigInt
+  target     String
+  cost       Float?
+  result     Json
+  links      Json?
+  linksTotal Int?
+}
+
+model RefDomainsSearch {
+  id     String   @id
+  userId String
+  user   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts     BigInt
+  target String
+  cost   Float?
+  total  Int
+  items  Json
+}
+
+model AnchorsSearch {
+  id     String   @id
+  userId String
+  user   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts     BigInt
+  target String
+  cost   Float?
+  total  Int
+  items  Json
+}
+
+model GridSearch {
+  id        String   @id
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts        BigInt
+  keyword   String
+  target    String
+  center    String
+  gridSize  Int
+  spacingKm Float
+  language  String
+  cost      Float?
+  results   Json
+}
+
+model InstantPageSearch {
+  id     String   @id
+  userId String
+  user   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts     BigInt
+  url    String
+  cost   Float?
+  result Json
+}
+
+// DataForSEO-issued task id; task_post → poll → task_get lifecycle
+model OnpageTask {
+  id           String   @id
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts           BigInt
+  url          String
+  target       String
+  status       String   @default("pending")
+  cost         Float?
+  errorMessage String?
+  result       Json?
+}
+
+model RedditSearch {
+  id          String   @id
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts          BigInt
+  targets     Json
+  resultCount Int
+  cost        Float?
+  items       Json
+}
+
+model ReviewsTask {
+  id          String   @id
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ts          BigInt
+  business    String
+  location    String
+  language    String
+  depth       Int
+  sortBy      String
+  status      String   @default("pending")
+  cost        Float?
+  resultCount Int?
+  result      Json?
+}
+
+// ---- SERP target-domain tracking (highlight domains in SERP results) ----
+
+model TargetDomain {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  domain    String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, domain])
+}
+
+// ---- rank tracker ----
+
+model TrackedKeyword {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  keyword   String
+  domain    String
+  location  String   @default("France")
+  language  String   @default("fr")
+  createdAt DateTime @default(now())
+
+  rankChecks RankCheck[]
+
+  @@unique([userId, keyword, domain, location, language])
+}
+
+model RankCheck {
+  id         String         @id @default(cuid())
+  keywordId  String
+  keyword    TrackedKeyword @relation(fields: [keywordId], references: [id], onDelete: Cascade)
+  checkedAt  BigInt
+  date       String
+  position   Int?
+  url        String?
+  title      String?
+  cost       Float?
+
+  @@unique([keywordId, date])
+  @@index([keywordId, date(sort: Desc)])
+}

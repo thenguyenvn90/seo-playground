@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { getCredentials, getHistRankHistory, saveHistRankSearch, getHistRankResults, getSetting } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import { LOCATIONS, LANGUAGES } from '@/lib/geo-options';
 import SearchForm from '@/components/SearchForm';
 
@@ -72,11 +73,12 @@ function Bar({ value, max, color }: { value: number; max: number; color: string 
 }
 
 export default async function HistoricalRankPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const creds = getCredentials();
-  const history = getHistRankHistory();
-  const defaultLocation = getSetting('default_location') ?? 'France';
-  const defaultLanguage = getSetting('default_language') ?? 'French';
-  const defaultDomain = getSetting('default_domain') ?? '';
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
+  const history = await getHistRankHistory(userId);
+  const defaultLocation = (await getSetting(userId, 'default_location')) ?? 'France';
+  const defaultLanguage = (await getSetting(userId, 'default_language')) ?? 'French';
+  const defaultDomain = (await getSetting(userId, 'default_domain')) ?? '';
 
   const params = await searchParams;
   const historyId = params.history_id;
@@ -89,7 +91,7 @@ export default async function HistoricalRankPage({ searchParams }: { searchParam
   let cost = 0;
 
   if (historyId) {
-    items = getHistRankResults<HistRankItem>(historyId) ?? [];
+    items = (await getHistRankResults<HistRankItem>(userId, historyId)) ?? [];
   } else if (target && creds) {
     try {
       const result = await fetchHistRank(target, location, language, creds.login, creds.pass);
@@ -99,7 +101,7 @@ export default async function HistoricalRankPage({ searchParams }: { searchParam
         items = result.items;
         cost = result.cost;
         const id = crypto.randomUUID();
-        saveHistRankSearch({ id, ts: Date.now(), target, location, language, cost }, items);
+        await saveHistRankSearch(userId, { id, ts: Date.now(), target, location, language, cost }, items);
       }
     } catch (e) {
       error = String(e);

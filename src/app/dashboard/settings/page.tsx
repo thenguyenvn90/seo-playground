@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { getCredentials, getSetting } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import { updateSettings, deleteCredentials } from './actions';
 
 interface DFUserResponse {
@@ -14,11 +15,12 @@ interface DFUserResponse {
 }
 
 export default async function SettingsPage() {
-  const creds = getCredentials();
-  const defaultLocation = getSetting('default_location') ?? '';
-  const defaultCoordinates = getSetting('default_coordinates') ?? '';
-  const defaultLanguage = getSetting('default_language') ?? '';
-  const defaultDomain = getSetting('default_domain') ?? '';
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
+  const defaultLocation = (await getSetting(userId, 'default_location')) ?? '';
+  const defaultCoordinates = (await getSetting(userId, 'default_coordinates')) ?? '';
+  const defaultLanguage = (await getSetting(userId, 'default_language')) ?? '';
+  const defaultDomain = (await getSetting(userId, 'default_domain')) ?? '';
 
   let balance = 0;
   let status = 'NOT CONNECTED';

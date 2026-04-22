@@ -5,6 +5,7 @@ import {
   getRankedKwResults,
   type RankedKwSearchEntry,
 } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import ExportCSVButton from '@/components/ExportCSVButton';
 import { LOCATIONS, LANGUAGES } from '@/lib/geo-options';
 import SearchForm from '@/components/SearchForm';
@@ -165,7 +166,8 @@ function formatDate(ts: number) {
 // ---- Page ----
 
 export default async function RankedKeywordsPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const creds = getCredentials();
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
   const params = await searchParams;
   const historyId = params.history_id;
 
@@ -184,11 +186,11 @@ export default async function RankedKeywordsPage({ searchParams }: { searchParam
   let activeEntry: RankedKwSearchEntry | null = null;
 
   if (historyId) {
-    const saved = getRankedKwResults<RankedKwItem>(historyId);
+    const saved = await getRankedKwResults<RankedKwItem>(userId, historyId);
     if (saved) {
       items = saved;
       isFromHistory = true;
-      const history = getRankedKwHistory();
+      const history = await getRankedKwHistory(userId);
       activeEntry = history.find((e) => e.id === historyId) ?? null;
       totalCount = activeEntry?.totalCount ?? items.length;
     } else {
@@ -217,12 +219,12 @@ export default async function RankedKeywordsPage({ searchParams }: { searchParam
           totalCount,
           cost,
         };
-        saveRankedKwSearch(entry, items);
+        await saveRankedKwSearch(userId, entry, items);
       }
     }
   }
 
-  const history = getRankedKwHistory();
+  const history = await getRankedKwHistory(userId);
   const hasQuery = historyId || target;
 
   // Stats

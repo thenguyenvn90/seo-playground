@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { getCredentials, getRedditHistory, saveRedditSearch, getRedditResults, type RedditSearchEntry } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import SearchForm from '@/components/SearchForm';
 import { MessageSquare, Users, ExternalLink } from 'lucide-react';
 
@@ -79,7 +80,8 @@ function formatMembers(n?: number) {
 // ---- Page ----
 
 export default async function RedditPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const creds = getCredentials();
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
   const params = await searchParams;
   const historyId = params.history_id;
   const rawTargets = params.targets ?? '';
@@ -92,11 +94,11 @@ export default async function RedditPage({ searchParams }: { searchParams: Promi
   let activeEntry: RedditSearchEntry | null = null;
 
   if (historyId) {
-    const saved = getRedditResults<RedditPageResult>(historyId);
+    const saved = await getRedditResults<RedditPageResult>(userId, historyId);
     if (saved) {
       items = saved;
       isFromHistory = true;
-      const history = getRedditHistory();
+      const history = await getRedditHistory(userId);
       activeEntry = history.find((e) => e.id === historyId) ?? null;
     } else {
       error = 'This search is no longer available.';
@@ -124,12 +126,12 @@ export default async function RedditPage({ searchParams }: { searchParams: Promi
           count: totalMentions,
           cost,
         };
-        saveRedditSearch(entry, items);
+        await saveRedditSearch(userId, entry, items);
       }
     }
   }
 
-  const history = getRedditHistory();
+  const history = await getRedditHistory(userId);
   const hasQuery = historyId || targets.length > 0;
   const totalMentions = items.reduce((s, p) => s + (p.reddit_reviews?.length ?? 0), 0);
 
@@ -149,8 +151,8 @@ export default async function RedditPage({ searchParams }: { searchParams: Promi
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
             <p className="text-sm text-slate-500 leading-relaxed">
               Enter up to <strong className="text-slate-700">10 URLs</strong> and instantly surface every Reddit thread
-              that links to or discusses those pages. For each mention you'll see the post title, the author, the
-              subreddit it was shared in, and the community's member count — useful for brand monitoring, content
+              that links to or discusses those pages. For each mention you&apos;ll see the post title, the author, the
+              subreddit it was shared in, and the community&apos;s member count — useful for brand monitoring, content
               distribution research, and spotting niche communities to engage with.
             </p>
 

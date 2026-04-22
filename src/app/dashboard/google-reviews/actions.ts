@@ -1,9 +1,11 @@
 'use server';
 
 import { getCredentials, saveReviewsTask } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import { revalidatePath } from 'next/cache';
 
 export async function submitReviewsTaskAction(formData: FormData) {
+  const userId = await requireUserId();
   const keyword = (formData.get('keyword') as string)?.trim();
   const location = (formData.get('location') as string)?.trim() || 'France';
   const language = (formData.get('language') as string)?.trim() || 'French';
@@ -12,7 +14,7 @@ export async function submitReviewsTaskAction(formData: FormData) {
 
   if (!keyword) return;
 
-  const creds = getCredentials();
+  const creds = await getCredentials(userId);
   if (!creds) return;
 
   const auth = btoa(`${creds.login}:${creds.pass}`);
@@ -40,7 +42,6 @@ export async function submitReviewsTaskAction(formData: FormData) {
   const task = data?.tasks?.[0];
   if (!task?.id || task.status_code !== 20100) return;
 
-  // data.cost is the top-level cost from the task_post response
-  saveReviewsTask(task.id, keyword, location, language, depth, sortBy, data.cost);
+  await saveReviewsTask(userId, task.id, keyword, location, language, depth, sortBy, data.cost);
   revalidatePath('/dashboard/google-reviews');
 }

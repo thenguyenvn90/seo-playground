@@ -5,6 +5,7 @@ import {
   getCompetitorsResults,
   type CompetitorsSearchEntry,
 } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import ExportCSVButton from '@/components/ExportCSVButton';
 import { LOCATIONS, LANGUAGES } from '@/lib/geo-options';
 import SearchForm from '@/components/SearchForm';
@@ -111,7 +112,8 @@ function formatDate(ts: number) {
 // ---- Page ----
 
 export default async function CompetitorsPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const creds = getCredentials();
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
   const params = await searchParams;
   const historyId = params.history_id;
 
@@ -127,11 +129,11 @@ export default async function CompetitorsPage({ searchParams }: { searchParams: 
   let activeEntry: CompetitorsSearchEntry | null = null;
 
   if (historyId) {
-    const saved = getCompetitorsResults<CompetitorItem>(historyId);
+    const saved = await getCompetitorsResults<CompetitorItem>(userId, historyId);
     if (saved) {
       items = saved;
       isFromHistory = true;
-      const history = getCompetitorsHistory();
+      const history = await getCompetitorsHistory(userId);
       activeEntry = history.find((e) => e.id === historyId) ?? null;
     } else {
       error = 'Cette recherche n\'est plus disponible.';
@@ -157,12 +159,12 @@ export default async function CompetitorsPage({ searchParams }: { searchParams: 
           count: items.length,
           cost,
         };
-        saveCompetitorsSearch(entry, items);
+        await saveCompetitorsSearch(userId, entry, items);
       }
     }
   }
 
-  const history = getCompetitorsHistory();
+  const history = await getCompetitorsHistory(userId);
   const hasQuery = historyId || target;
   const displayTarget = activeEntry?.target ?? target.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
 

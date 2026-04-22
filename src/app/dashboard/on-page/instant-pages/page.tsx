@@ -1,4 +1,5 @@
 import { getCredentials, getInstantPageHistory, saveInstantPageResult, getInstantPageResult, type InstantPageEntry } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import { redirect } from 'next/navigation';
 import SearchForm from '@/components/SearchForm';
 import { randomUUID } from 'crypto';
@@ -250,7 +251,8 @@ function CheckBadge({ severity, label }: { severity: CheckSeverity; label: strin
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default async function InstantPagesPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const creds = getCredentials();
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
   const params = await searchParams;
 
   let createError: string | null = null;
@@ -272,7 +274,7 @@ export default async function InstantPagesPage({ searchParams }: { searchParams:
         createError = error ?? 'API call failed.';
       } else {
         const id = randomUUID();
-        saveInstantPageResult<ApiResult>({ id, ts: Date.now(), url: rawUrl, cost }, result);
+        await saveInstantPageResult<ApiResult>(userId, { id, ts: Date.now(), url: rawUrl, cost }, result);
         redirect(`/dashboard/on-page/instant-pages?id=${id}`);
       }
     }
@@ -283,12 +285,12 @@ export default async function InstantPagesPage({ searchParams }: { searchParams:
   let pageResult: ApiResult | null = null;
 
   if (params.id) {
-    const history = getInstantPageHistory();
+    const history = await getInstantPageHistory(userId);
     activeEntry = history.find((e) => e.id === params.id) ?? null;
-    pageResult = getInstantPageResult<ApiResult>(params.id);
+    pageResult = await getInstantPageResult<ApiResult>(userId, params.id);
   }
 
-  const history = getInstantPageHistory();
+  const history = await getInstantPageHistory(userId);
   const page = pageResult?.items?.[0];
 
   const flaggedChecks = page?.checks

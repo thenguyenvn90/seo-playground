@@ -6,6 +6,7 @@ import {
   getBacklinksLinks,
   type BacklinksSearchEntry,
 } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import ExportCSVButton from '@/components/ExportCSVButton';
 import SearchForm from '@/components/SearchForm';
 
@@ -180,7 +181,8 @@ function DRBadge({ value }: { value?: number }) {
 // ---- Page ----
 
 export default async function BacklinksPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const creds = getCredentials();
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
   const params = await searchParams;
   const historyId = params.history_id;
 
@@ -199,13 +201,13 @@ export default async function BacklinksPage({ searchParams }: { searchParams: Pr
   let activeEntry: BacklinksSearchEntry | null = null;
 
   if (historyId) {
-    const savedSummary = getBacklinksResult<BacklinksSummary>(historyId);
-    const savedLinks = getBacklinksLinks<BacklinkItem>(historyId);
+    const savedSummary = await getBacklinksResult<BacklinksSummary>(userId, historyId);
+    const savedLinks = await getBacklinksLinks<BacklinkItem>(userId, historyId);
     if (savedSummary) {
       summary = savedSummary;
       links = savedLinks ?? [];
       isFromHistory = true;
-      const history = getBacklinksHistory();
+      const history = await getBacklinksHistory(userId);
       activeEntry = history.find((e) => e.id === historyId) ?? null;
       linksTotal = activeEntry?.linksTotal ?? links.length;
     } else {
@@ -241,13 +243,13 @@ export default async function BacklinksPage({ searchParams }: { searchParams: Pr
             cost,
             linksTotal,
           };
-          saveBacklinksSearch(entry, summary ?? {}, links, linksTotal);
+          await saveBacklinksSearch(userId, entry, summary ?? {}, links, linksTotal);
         }
       }
     }
   }
 
-  const history = getBacklinksHistory();
+  const history = await getBacklinksHistory(userId);
   const hasQuery = historyId || target;
   const displayTarget = activeEntry?.target ?? cleanTarget(target);
 

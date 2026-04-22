@@ -8,6 +8,7 @@ import {
   getSetting,
   type KwOverviewSearchEntry,
 } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import { LOCATIONS, LANGUAGES } from '@/lib/geo-options';
 import SearchForm from '@/components/SearchForm';
 
@@ -167,13 +168,14 @@ function formatDate(ts: number) {
 // ---- Page ----
 
 export default async function KeywordOverviewPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const creds = getCredentials();
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
   const params = await searchParams;
   const historyId = params.history_id;
 
   const rawKeywords = params.keywords ?? '';
-  const defaultLocation = getSetting('default_location') ?? 'France';
-  const defaultLanguage = getSetting('default_language') ?? 'French';
+  const defaultLocation = (await getSetting(userId, 'default_location')) ?? 'France';
+  const defaultLanguage = (await getSetting(userId, 'default_language')) ?? 'French';
   const location = params.location ?? defaultLocation;
   const language = params.language ?? defaultLanguage;
 
@@ -184,11 +186,11 @@ export default async function KeywordOverviewPage({ searchParams }: { searchPara
   let activeEntry: KwOverviewSearchEntry | null = null;
 
   if (historyId) {
-    const saved = getKwOverviewResults<KwOverviewItem>(historyId);
+    const saved = await getKwOverviewResults<KwOverviewItem>(userId, historyId);
     if (saved) {
       items = saved;
       isFromHistory = true;
-      const history = getKwOverviewHistory();
+      const history = await getKwOverviewHistory(userId);
       activeEntry = history.find((e) => e.id === historyId) ?? null;
     } else {
       error = 'This search is no longer available.';
@@ -217,12 +219,12 @@ export default async function KeywordOverviewPage({ searchParams }: { searchPara
           count: items.length,
           cost,
         };
-        saveKwOverviewSearch(entry, items);
+        await saveKwOverviewSearch(userId, entry, items);
       }
     }
   }
 
-  const history = getKwOverviewHistory();
+  const history = await getKwOverviewHistory(userId);
   const hasQuery = historyId || keywords.length > 0;
 
   // Aggregate stats

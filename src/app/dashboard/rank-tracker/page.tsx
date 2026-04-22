@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { getCredentials, getTrackedKeywords, getRankHistory, getLatestRankCheck, getSetting } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import { LOCATIONS, LANGUAGES } from '@/lib/geo-options';
 import { addKeywordAction, removeKeywordAction, checkOneAction, checkAllAction, saveDepthAction } from './actions';
 import type { RankCheck } from '@/lib/db';
@@ -74,20 +75,21 @@ const inputCls = 'w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-x
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default async function RankTrackerPage() {
-  const creds = getCredentials();
-  const keywords = getTrackedKeywords();
-  const defaultLocation = getSetting('default_location') ?? 'France';
-  const defaultLanguage = getSetting('default_language') ?? 'French';
-  const defaultDomain = getSetting('default_domain') ?? '';
-  const rankDepth = getSetting('rank_tracker_depth') ?? '100';
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
+  const keywords = await getTrackedKeywords(userId);
+  const defaultLocation = (await getSetting(userId, 'default_location')) ?? 'France';
+  const defaultLanguage = (await getSetting(userId, 'default_language')) ?? 'French';
+  const defaultDomain = (await getSetting(userId, 'default_domain')) ?? '';
+  const rankDepth = (await getSetting(userId, 'rank_tracker_depth')) ?? '100';
 
-  const rows = keywords.map((kw) => {
-    const history = getRankHistory(kw.id, 30);
-    const latest = getLatestRankCheck(kw.id);
+  const rows = await Promise.all(keywords.map(async (kw) => {
+    const history = await getRankHistory(userId, kw.id, 30);
+    const latest = await getLatestRankCheck(userId, kw.id);
     const sorted = [...history].sort((a, b) => a.date.localeCompare(b.date));
     const previous = sorted.length >= 2 ? sorted[sorted.length - 2] : null;
     return { kw, history, latest, previous };
-  });
+  }));
 
   return (
     <div className="space-y-6 pb-12">

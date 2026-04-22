@@ -1,4 +1,5 @@
 import { getCredentials, getTargetDomains, getSerpHistory, saveSerpSearch, getSerpResults, type SerpHistoryEntry, type TargetHit } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import { LOCATIONS, LANGUAGES } from '@/lib/geo-options';
 import { addDomainAction, removeDomainAction } from './actions';
 import SearchForm from '@/components/SearchForm';
@@ -51,9 +52,10 @@ function formatDate(ts: number) {
 }
 
 export default async function SerpPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const creds = getCredentials();
-  const targetDomains = getTargetDomains();
-  const history = getSerpHistory();
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
+  const targetDomains = await getTargetDomains(userId);
+  const history = await getSerpHistory(userId);
 
   const params = await searchParams;
   const historyId = params.history_id;
@@ -70,7 +72,7 @@ export default async function SerpPage({ searchParams }: { searchParams: Promise
 
   // Load from history
   if (historyId) {
-    const saved = getSerpResults<SerpItem>(historyId);
+    const saved = await getSerpResults<SerpItem>(userId, historyId);
     if (saved) {
       results = saved;
       isFromHistory = true;
@@ -109,7 +111,7 @@ export default async function SerpPage({ searchParams }: { searchParams: Promise
             count: results.length,
             targetHits: hits.length > 0 ? hits : undefined,
           };
-          saveSerpSearch(entry, results);
+          await saveSerpSearch(userId, entry, results);
         }
       } catch {
         error = 'Error lors de la requête DataForSEO.';

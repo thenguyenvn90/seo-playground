@@ -2,6 +2,7 @@ import {
   getCredentials, getSetting, getLfHistory, saveLfSearch, getLfResults, type LfHistoryEntry,
   getGridHistory, saveGridSearch, getGridResults, type GridSearchEntry, type GridPoint, type GridLocalItem,
 } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import LocalFinderForm from './LocalFinderForm';
 import GridResults from './GridResults';
 
@@ -195,14 +196,15 @@ function formatDate(ts: number) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default async function LocalFinderPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const creds = getCredentials();
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
   const params = await searchParams;
   const historyId = params.history_id;
   const gridHistoryId = params.grid_history_id;
   const isGridMode = params.mode === 'grid';
 
-  const defaultLocation = getSetting('default_location') ?? 'France';
-  const defaultLanguage = getSetting('default_language') ?? 'English';
+  const defaultLocation = (await getSetting(userId, 'default_location')) ?? 'France';
+  const defaultLanguage = (await getSetting(userId, 'default_language')) ?? 'English';
 
   // ── Regular local finder state ──
   let items: LocalPackItem[] = [];
@@ -220,11 +222,11 @@ export default async function LocalFinderPage({ searchParams }: { searchParams: 
 
   // ── Load regular history ──
   if (historyId) {
-    const saved = getLfResults<LocalPackItem>(historyId);
+    const saved = await getLfResults<LocalPackItem>(userId, historyId);
     if (saved) {
       items = saved;
       isFromHistory = true;
-      const index = getLfHistory();
+      const index = await getLfHistory(userId);
       activeEntry = index.find((e) => e.id === historyId) ?? null;
     } else {
       error = 'Search not found.';
@@ -233,10 +235,10 @@ export default async function LocalFinderPage({ searchParams }: { searchParams: 
 
   // ── Load grid history ──
   if (gridHistoryId) {
-    const saved = getGridResults(gridHistoryId);
+    const saved = await getGridResults(userId, gridHistoryId);
     if (saved) {
       gridResults = saved;
-      const history = getGridHistory();
+      const history = await getGridHistory(userId);
       gridEntry = history.find((e) => e.id === gridHistoryId) ?? null;
     } else {
       gridError = 'Search not found.';
@@ -266,7 +268,7 @@ export default async function LocalFinderPage({ searchParams }: { searchParams: 
             Object.entries(params).filter(([k, v]) => k !== 'history_id' && v !== undefined)
           ) as Record<string, string>,
         };
-        saveLfSearch(entry, items);
+        await saveLfSearch(userId, entry, items);
       }
     }
   }
@@ -299,13 +301,13 @@ export default async function LocalFinderPage({ searchParams }: { searchParams: 
           language: params.language ?? defaultLanguage,
           cost: result.cost,
         };
-        saveGridSearch(gridEntry, result.results);
+        await saveGridSearch(userId, gridEntry, result.results);
       }
     }
   }
 
-  const historyIndex = getLfHistory();
-  const gridHistory = getGridHistory();
+  const historyIndex = await getLfHistory(userId);
+  const gridHistory = await getGridHistory(userId);
 
   const sourceParams = activeEntry?.params ?? params;
   const formDefaults = {

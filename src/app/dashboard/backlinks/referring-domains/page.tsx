@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { getCredentials, getRefDomainsHistory, saveRefDomainsSearch, getRefDomainsResults, getSetting } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import ExportCSVButton from '@/components/ExportCSVButton';
 import SearchForm from '@/components/SearchForm';
 
@@ -60,9 +61,10 @@ async function fetchRefDomains(target: string, limit: number, login: string, pas
 }
 
 export default async function RefDomainsPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const creds = getCredentials();
-  const history = getRefDomainsHistory();
-  const defaultDomain = getSetting('default_domain') ?? '';
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
+  const history = await getRefDomainsHistory(userId);
+  const defaultDomain = (await getSetting(userId, 'default_domain')) ?? '';
 
   const params = await searchParams;
   const historyId = params.history_id;
@@ -75,7 +77,7 @@ export default async function RefDomainsPage({ searchParams }: { searchParams: P
   let cost = 0;
 
   if (historyId) {
-    items = getRefDomainsResults<RefDomain>(historyId) ?? [];
+    items = (await getRefDomainsResults<RefDomain>(userId, historyId)) ?? [];
     const entry = history.find((h) => h.id === historyId);
     total = entry?.total ?? items.length;
   } else if (target && creds) {
@@ -88,7 +90,7 @@ export default async function RefDomainsPage({ searchParams }: { searchParams: P
         total = result.total;
         cost = result.cost;
         const id = crypto.randomUUID();
-        saveRefDomainsSearch({ id, ts: Date.now(), target, cost, total }, items);
+        await saveRefDomainsSearch(userId, { id, ts: Date.now(), target, cost, total }, items);
       }
     } catch (e) {
       error = String(e);

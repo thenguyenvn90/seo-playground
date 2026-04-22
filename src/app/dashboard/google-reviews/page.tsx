@@ -5,6 +5,7 @@ import {
   getReviewsTasks, getReviewsTaskResult, updateReviewsTask,
   type ReviewsTask,
 } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import { submitReviewsTaskAction } from './actions';
 import PendingButton from '@/components/PendingButton';
 import { CheckCircle, Clock, AlertCircle } from 'lucide-react';
@@ -322,10 +323,11 @@ function StatCard({ label, value, sub }: { label: string; value: string; sub?: s
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default async function GoogleReviewsPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const creds = getCredentials();
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
   const params = await searchParams;
-  const defaultLocation = getSetting('default_location') ?? 'France';
-  const defaultLanguage = getSetting('default_language') ?? 'French';
+  const defaultLocation = (await getSetting(userId, 'default_location')) ?? 'France';
+  const defaultLanguage = (await getSetting(userId, 'default_language')) ?? 'French';
 
   // Auto-poll: check tasks_ready on every load and fetch ready tasks
   if (creds) {
@@ -341,7 +343,7 @@ export default async function GoogleReviewsPage({ searchParams }: { searchParams
         };
         const readyIds = new Set((readyData?.tasks?.[0]?.result ?? []).map((r) => r.id));
 
-        const pendingTasks = getReviewsTasks().filter((t) => t.status === 'pending');
+        const pendingTasks = (await getReviewsTasks(userId)).filter((t) => t.status === 'pending');
         for (const pt of pendingTasks) {
           if (!readyIds.has(pt.id)) continue;
 
@@ -367,16 +369,18 @@ export default async function GoogleReviewsPage({ searchParams }: { searchParams
           const items = task.result?.[0]?.items ?? [];
           const resultCount = task.result?.[0]?.total_count ?? task.result_count ?? items.length;
           const cost = task.cost ?? getData.cost;
-          updateReviewsTask(pt.id, 'ready', items, cost, resultCount);
+          await updateReviewsTask(userId, pt.id, 'ready', items, cost, resultCount);
         }
       }
     } catch { /* silently ignore poll errors */ }
   }
 
-  const tasks = getReviewsTasks();
+  const tasks = await getReviewsTasks(userId);
   const activeId = params.id;
   const activeTask = activeId ? tasks.find((t) => t.id === activeId) ?? null : null;
-  const reviews: Review[] = activeTask?.status === 'ready' ? (getReviewsTaskResult<Review>(activeTask.id) ?? []) : [];
+  const reviews: Review[] = activeTask?.status === 'ready'
+    ? ((await getReviewsTaskResult<Review>(userId, activeTask.id)) ?? [])
+    : [];
 
   const ratings = reviews.map((r) => r.rating?.value ?? 0).filter((v) => v > 0);
   const avgRating = ratings.length > 0 ? ratings.reduce((a, b) => a + b, 0) / ratings.length : null;

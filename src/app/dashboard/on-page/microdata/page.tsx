@@ -1,4 +1,5 @@
 import { getCredentials, getOnpageTasks, upsertOnpageTask, getOnpageResult, saveOnpageResult, type OnpageTask } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import { redirect } from 'next/navigation';
 import SearchForm from '@/components/SearchForm';
 
@@ -148,7 +149,8 @@ function statusBadge(status: OnpageTask['status']) {
 }
 
 export default async function MicrodataPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const creds = getCredentials();
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
   const params = await searchParams;
 
   let createError: string | null = null;
@@ -170,7 +172,7 @@ export default async function MicrodataPage({ searchParams }: { searchParams: Pr
         createError = error ?? 'Impossible de créer la tâche.';
       } else {
         const urlObj = new URL(rawUrl);
-        upsertOnpageTask({ id: taskId, ts: Date.now(), url: rawUrl, target: urlObj.hostname, status: 'pending', cost });
+        await upsertOnpageTask(userId, { id: taskId, ts: Date.now(), url: rawUrl, target: urlObj.hostname, status: 'pending', cost });
         redirect(`/dashboard/on-page/microdata?task_id=${taskId}`);
       }
     }
@@ -182,42 +184,42 @@ export default async function MicrodataPage({ searchParams }: { searchParams: Pr
   let taskError: string | null = null;
 
   if (params.task_id) {
-    const index = getOnpageTasks();
+    const index = await getOnpageTasks(userId);
     activeTask = index.find((e) => e.id === params.task_id) ?? null;
-    const cached = getOnpageResult<MicrodataResult[]>(params.task_id);
+    const cached = await getOnpageResult<MicrodataResult[]>(userId, params.task_id);
 
     if (cached) {
       microdataResults = cached;
       if (activeTask && activeTask.status !== 'finished') {
         activeTask = { ...activeTask, status: 'finished' };
-        upsertOnpageTask(activeTask);
+        await upsertOnpageTask(userId, activeTask);
       }
     } else if (creds && activeTask) {
       const status = await checkSummary(params.task_id, creds.login, creds.pass);
       if (status === 'error') {
         taskError = 'Error lors de la vérification du statut.';
         activeTask = { ...activeTask, status: 'error', errorMessage: taskError };
-        upsertOnpageTask(activeTask);
+        await upsertOnpageTask(userId, activeTask);
       } else if (status === 'finished') {
         const { result, error: mdError } = await fetchMicrodata(params.task_id, activeTask.url, creds.login, creds.pass);
         if (mdError) {
           taskError = mdError;
         } else if (result) {
           microdataResults = result;
-          saveOnpageResult(params.task_id, result);
+          await saveOnpageResult(userId, params.task_id, result);
         }
         activeTask = { ...activeTask, status: 'finished' };
-        upsertOnpageTask(activeTask);
+        await upsertOnpageTask(userId, activeTask);
       } else {
         if (activeTask.status === 'pending') {
           activeTask = { ...activeTask, status: 'in_progress' };
-          upsertOnpageTask(activeTask);
+          await upsertOnpageTask(userId, activeTask);
         }
       }
     }
   }
 
-  const historyIndex = getOnpageTasks();
+  const historyIndex = await getOnpageTasks(userId);
 
   return (
     <div className="space-y-6">

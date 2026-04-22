@@ -3,6 +3,7 @@ import {
   getKwDifficultyHistory, saveKwDifficultySearch, getKwDifficultyResults,
   type KwDifficultySearchEntry,
 } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import { LOCATIONS, LANGUAGES } from '@/lib/geo-options';
 import SearchForm from '@/components/SearchForm';
 
@@ -84,12 +85,13 @@ function formatDate(ts: number) {
 }
 
 export default async function KeywordDifficultyPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const creds = getCredentials();
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
   const params = await searchParams;
   const historyId = params.history_id;
 
-  const defaultLocation = getSetting('default_location') ?? 'France';
-  const defaultLanguage = getSetting('default_language') ?? 'French';
+  const defaultLocation = (await getSetting(userId, 'default_location')) ?? 'France';
+  const defaultLanguage = (await getSetting(userId, 'default_language')) ?? 'French';
 
   const keywords = params.keywords?.trim() ?? '';
   const location = params.location ?? defaultLocation;
@@ -102,11 +104,11 @@ export default async function KeywordDifficultyPage({ searchParams }: { searchPa
   let activeEntry: KwDifficultySearchEntry | null = null;
 
   if (historyId) {
-    const saved = getKwDifficultyResults<DifficultyItem>(historyId);
+    const saved = await getKwDifficultyResults<DifficultyItem>(userId, historyId);
     if (saved) {
       items = saved;
       isFromHistory = true;
-      const history = getKwDifficultyHistory();
+      const history = await getKwDifficultyHistory(userId);
       activeEntry = history.find((e) => e.id === historyId) ?? null;
     } else {
       error = "Cette recherche n'est plus disponible.";
@@ -136,12 +138,12 @@ export default async function KeywordDifficultyPage({ searchParams }: { searchPa
           count: items.length,
           cost,
         };
-        saveKwDifficultySearch(entry, items);
+        await saveKwDifficultySearch(userId, entry, items);
       }
     }
   }
 
-  const history = getKwDifficultyHistory();
+  const history = await getKwDifficultyHistory(userId);
   const displayLocation = activeEntry?.location ?? location;
   const displayLanguage = activeEntry?.language ?? language;
 

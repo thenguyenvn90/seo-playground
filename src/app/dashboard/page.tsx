@@ -1,10 +1,12 @@
 export const dynamic = 'force-dynamic';
 
 import { getCredentials } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import { saveCredentialsAction } from './actions';
 
 export default async function DashboardPage() {
-  const creds = getCredentials();
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
 
   if (!creds) {
     return (

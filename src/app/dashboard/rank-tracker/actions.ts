@@ -4,6 +4,7 @@ import {
   getCredentials, getTrackedKeywords, addTrackedKeyword,
   removeTrackedKeyword, saveRankCheck, getSetting, setSetting,
 } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import { revalidatePath } from 'next/cache';
 
 interface SerpItem {
@@ -31,12 +32,13 @@ function cleanDomain(d: string) {
  * requests. Reduces "Check All" from N×3s to ~3s regardless of keyword count.
  */
 async function checkKeywordsBatch(
-  keywords: Array<{ id: number; keyword: string; domain: string; location: string; language: string }>,
+  userId: string,
+  keywords: Array<{ id: string; keyword: string; domain: string; location: string; language: string }>,
 ) {
-  const creds = getCredentials();
+  const creds = await getCredentials(userId);
   if (!creds || keywords.length === 0) return;
 
-  const depth = parseInt(getSetting('rank_tracker_depth') ?? '100', 10);
+  const depth = parseInt((await getSetting(userId, 'rank_tracker_depth')) ?? '100', 10);
   const auth = btoa(`${creds.login}:${creds.pass}`);
   const BATCH = 100; // DataForSEO max tasks per request
 
@@ -77,19 +79,21 @@ async function checkKeywordsBatch(
         return d === domain || d.endsWith('.' + domain);
       });
 
-      saveRankCheck(kw.id, hit?.rank_absolute ?? null, hit?.url ?? null, hit?.title ?? null, cost);
+      await saveRankCheck(userId, kw.id, hit?.rank_absolute ?? null, hit?.url ?? null, hit?.title ?? null, cost);
     }
   }
 }
 
 export async function saveDepthAction(formData: FormData) {
+  const userId = await requireUserId();
   const depth = formData.get('rank_tracker_depth') as string;
   const valid = ['10', '20', '50', '100'];
-  if (valid.includes(depth)) setSetting('rank_tracker_depth', depth);
+  if (valid.includes(depth)) await setSetting(userId, 'rank_tracker_depth', depth);
   revalidatePath('/dashboard/rank-tracker');
 }
 
 export async function addKeywordAction(formData: FormData) {
+  const userId = await requireUserId();
   const raw = (formData.get('keywords') as string) ?? '';
   const domain = (formData.get('domain') as string)?.trim();
   const location = (formData.get('location') as string)?.trim() || 'France';
@@ -100,36 +104,39 @@ export async function addKeywordAction(formData: FormData) {
   const kwList = raw.split('\n').map((k) => k.trim()).filter(Boolean).slice(0, 50);
   if (kwList.length === 0) return;
 
-  const toCheck: Array<{ id: number; keyword: string; domain: string; location: string; language: string }> = [];
+  const toCheck: Array<{ id: string; keyword: string; domain: string; location: string; language: string }> = [];
   for (const keyword of kwList) {
-    const id = addTrackedKeyword(keyword, domain, location, language);
+    const id = await addTrackedKeyword(userId, keyword, domain, location, language);
     toCheck.push({ id, keyword, domain, location, language });
   }
 
-  await checkKeywordsBatch(toCheck);
+  await checkKeywordsBatch(userId, toCheck);
   revalidatePath('/dashboard/rank-tracker');
 }
 
 export async function removeKeywordAction(formData: FormData) {
-  const id = Number(formData.get('id'));
+  const userId = await requireUserId();
+  const id = (formData.get('id') as string)?.trim();
   if (!id) return;
-  removeTrackedKeyword(id);
+  await removeTrackedKeyword(userId, id);
   revalidatePath('/dashboard/rank-tracker');
 }
 
 export async function checkOneAction(formData: FormData) {
-  const id = Number(formData.get('id'));
+  const userId = await requireUserId();
+  const id = (formData.get('id') as string)?.trim();
   const keyword = formData.get('keyword') as string;
   const domain = formData.get('domain') as string;
   const location = formData.get('location') as string;
   const language = formData.get('language') as string;
   if (!id || !keyword || !domain) return;
-  await checkKeywordsBatch([{ id, keyword, domain, location, language }]);
+  await checkKeywordsBatch(userId, [{ id, keyword, domain, location, language }]);
   revalidatePath('/dashboard/rank-tracker');
 }
 
 export async function checkAllAction() {
-  const keywords = getTrackedKeywords();
-  await checkKeywordsBatch(keywords);
+  const userId = await requireUserId();
+  const keywords = await getTrackedKeywords(userId);
+  await checkKeywordsBatch(userId, keywords);
   revalidatePath('/dashboard/rank-tracker');
 }

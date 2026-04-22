@@ -1,309 +1,103 @@
-import Database from 'better-sqlite3';
-import path from 'path';
+// Per-user data access layer on top of Prisma + Postgres.
+//
+// Every helper takes `userId` as the first argument so callers (server actions,
+// RSC pages, API routes) scope reads and writes to the signed-in user — use
+// `requireUserId()` from '@/lib/session' to get it. SQLite behaviour is
+// preserved function-by-function; only the backend changed.
+//
+// DataForSEO credentials live in `UserCredential` with `dfsPassword` encrypted
+// at rest via AES-256-GCM (see '@/lib/crypto'). Key/value settings
+// (default_location, rank_tracker_depth, etc.) live in `UserSetting`.
+//
+// `ts` fields keep the existing ms-epoch `number` shape at the TS boundary; we
+// convert to/from Prisma's `BigInt` inside each helper so callers don't have
+// to think about it.
 
-let _db: Database.Database | null = null;
+import { Prisma } from '@/generated/prisma';
+import { prisma } from '@/lib/prisma';
+import { encrypt, decrypt } from '@/lib/crypto';
 
-function getDb(): Database.Database {
-  if (!_db) {
-    _db = new Database(path.join(process.cwd(), 'seo-playground.db'));
-    _db.pragma('journal_mode = WAL');
-    initSchema(_db);
-  }
-  return _db;
-}
+const toBigInt = (n: number) => BigInt(n);
+const fromBigInt = (n: bigint) => Number(n);
 
-function initSchema(db: Database.Database) {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS serp_searches (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      keyword TEXT NOT NULL,
-      location TEXT NOT NULL,
-      language TEXT NOT NULL,
-      device TEXT NOT NULL,
-      depth INTEGER NOT NULL,
-      result_count INTEGER NOT NULL,
-      items TEXT NOT NULL,
-      target_hits TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS kd_searches (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      se TEXT NOT NULL,
-      se_type TEXT NOT NULL,
-      label TEXT NOT NULL,
-      result_count INTEGER NOT NULL,
-      cost REAL,
-      params TEXT NOT NULL,
-      items TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS lf_searches (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      keyword TEXT NOT NULL,
-      location TEXT NOT NULL,
-      result_count INTEGER NOT NULL,
-      cost REAL,
-      params TEXT NOT NULL,
-      items TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS target_domains (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      domain TEXT NOT NULL UNIQUE,
-      created_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS kw_overview_searches (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      keywords TEXT NOT NULL,
-      location TEXT NOT NULL,
-      language TEXT NOT NULL,
-      result_count INTEGER NOT NULL,
-      cost REAL,
-      items TEXT NOT NULL
-    );
-
-
-
-    CREATE TABLE IF NOT EXISTS backlinks_searches (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      target TEXT NOT NULL,
-      cost REAL,
-      result TEXT NOT NULL,
-      links TEXT,
-      links_total INTEGER
-    );
-
-    CREATE TABLE IF NOT EXISTS competitors_searches (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      target TEXT NOT NULL,
-      location TEXT NOT NULL,
-      language TEXT NOT NULL,
-      result_count INTEGER NOT NULL,
-      cost REAL,
-      items TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS ranked_kw_searches (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      target TEXT NOT NULL,
-      location TEXT NOT NULL,
-      language TEXT NOT NULL,
-      result_count INTEGER NOT NULL,
-      total_count INTEGER NOT NULL,
-      cost REAL,
-      items TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS onpage_tasks (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      url TEXT NOT NULL,
-      target TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending',
-      cost REAL,
-      error_message TEXT,
-      result TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS tracked_keywords (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      keyword TEXT NOT NULL,
-      domain TEXT NOT NULL,
-      location TEXT NOT NULL DEFAULT 'France',
-      language TEXT NOT NULL DEFAULT 'fr',
-      created_at INTEGER NOT NULL,
-      UNIQUE(keyword, domain, location, language)
-    );
-
-    CREATE TABLE IF NOT EXISTS rank_checks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      keyword_id INTEGER NOT NULL REFERENCES tracked_keywords(id) ON DELETE CASCADE,
-      checked_at INTEGER NOT NULL,
-      date TEXT NOT NULL,
-      position INTEGER,
-      url TEXT,
-      title TEXT,
-      cost REAL
-    );
-
-    CREATE TABLE IF NOT EXISTS ref_domains_searches (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      target TEXT NOT NULL,
-      cost REAL,
-      total INTEGER,
-      items TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS anchors_searches (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      target TEXT NOT NULL,
-      cost REAL,
-      total INTEGER,
-      items TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS hist_rank_searches (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      target TEXT NOT NULL,
-      location TEXT NOT NULL,
-      language TEXT NOT NULL,
-      cost REAL,
-      items TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS domain_intersection_searches (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      target1 TEXT NOT NULL,
-      target2 TEXT NOT NULL,
-      location TEXT NOT NULL,
-      language TEXT NOT NULL,
-      result_count INTEGER NOT NULL,
-      total_count INTEGER NOT NULL,
-      cost REAL,
-      items TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS kw_difficulty_searches (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      keywords TEXT NOT NULL,
-      location TEXT NOT NULL,
-      language TEXT NOT NULL,
-      result_count INTEGER NOT NULL,
-      cost REAL,
-      items TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS related_kw_searches (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      keyword TEXT NOT NULL,
-      location TEXT NOT NULL,
-      language TEXT NOT NULL,
-      depth INTEGER NOT NULL,
-      result_count INTEGER NOT NULL,
-      cost REAL,
-      items TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS grid_searches (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      keyword TEXT NOT NULL,
-      target TEXT NOT NULL,
-      center TEXT NOT NULL,
-      grid_size INTEGER NOT NULL,
-      spacing_km REAL NOT NULL,
-      language TEXT NOT NULL,
-      cost REAL,
-      results TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS instant_page_searches (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      url TEXT NOT NULL,
-      cost REAL,
-      result TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS reddit_searches (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      targets TEXT NOT NULL,
-      result_count INTEGER NOT NULL,
-      cost REAL,
-      items TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS reviews_tasks (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      business TEXT NOT NULL,
-      location TEXT NOT NULL,
-      language TEXT NOT NULL,
-      depth INTEGER NOT NULL,
-      sort_by TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending',
-      cost REAL,
-      result_count INTEGER,
-      result TEXT
-    );
-  `);
-
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_rank_checks_kw ON rank_checks(keyword_id, checked_at DESC)`);
-
-  // Migrations — add columns that may not exist in older DBs
-  try { db.exec('ALTER TABLE serp_searches ADD COLUMN target_hits TEXT'); } catch { /* already exists */ }
-  try { db.exec('ALTER TABLE backlinks_searches ADD COLUMN links TEXT'); } catch { /* already exists */ }
-  try { db.exec('ALTER TABLE backlinks_searches ADD COLUMN links_total INTEGER'); } catch { /* already exists */ }
-}
+// Prisma demands `Prisma.DbNull` (not JS `null`) for clearing a nullable Json
+// column, and `Prisma.InputJsonValue` (not `object`) for a non-null payload.
+// These two helpers keep the call sites readable.
+const toJson = (v: unknown): Prisma.InputJsonValue => v as Prisma.InputJsonValue;
+const toNullableJson = (v: unknown): Prisma.InputJsonValue | typeof Prisma.DbNull =>
+  v === undefined || v === null ? Prisma.DbNull : (v as Prisma.InputJsonValue);
 
 // --- Settings ---
 
-export function getSetting(key: string): string | null {
-  const row = getDb().prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+export async function getSetting(userId: string, key: string): Promise<string | null> {
+  const row = await prisma.userSetting.findUnique({ where: { userId_key: { userId, key } } });
   return row?.value ?? null;
 }
 
-export function setSetting(key: string, value: string): void {
-  getDb().prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value);
+export async function setSetting(userId: string, key: string, value: string): Promise<void> {
+  await prisma.userSetting.upsert({
+    where: { userId_key: { userId, key } },
+    update: { value },
+    create: { userId, key, value },
+  });
 }
 
-export function deleteSetting(key: string): void {
-  getDb().prepare('DELETE FROM settings WHERE key = ?').run(key);
+export async function deleteSetting(userId: string, key: string): Promise<void> {
+  await prisma.userSetting.deleteMany({ where: { userId, key } });
 }
 
 // --- Credentials ---
 
-export function getCredentials(): { login: string; pass: string } | null {
-  const login = getSetting('dfs-login');
-  const pass = getSetting('dfs-pass');
-  if (!login || !pass) return null;
-  return { login, pass };
+export async function getCredentials(userId: string): Promise<{ login: string; pass: string } | null> {
+  const cred = await prisma.userCredential.findUnique({ where: { userId } });
+  if (!cred) return null;
+  try {
+    return { login: cred.dfsLogin, pass: decrypt(cred.dfsPassword) };
+  } catch {
+    // Corrupt ciphertext or wrong ENCRYPTION_KEY — treat as no creds rather than 500.
+    return null;
+  }
 }
 
-export function saveCredentials(login: string, pass: string): void {
-  setSetting('dfs-login', login);
-  setSetting('dfs-pass', pass);
+export async function saveCredentials(userId: string, login: string, pass: string): Promise<void> {
+  const dfsPassword = encrypt(pass);
+  await prisma.userCredential.upsert({
+    where: { userId },
+    update: { dfsLogin: login, dfsPassword },
+    create: { userId, dfsLogin: login, dfsPassword },
+  });
 }
 
-export function clearCredentials(): void {
-  deleteSetting('dfs-login');
-  deleteSetting('dfs-pass');
+export async function clearCredentials(userId: string): Promise<void> {
+  await prisma.userCredential.deleteMany({ where: { userId } });
 }
 
-// --- Target domains ---
+// --- Target domains (SERP highlight list) ---
 
-export function getTargetDomains(): string[] {
-  const rows = getDb().prepare('SELECT domain FROM target_domains ORDER BY created_at DESC').all() as { domain: string }[];
+function cleanDomain(domain: string): string {
+  return domain.toLowerCase().trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
+}
+
+export async function getTargetDomains(userId: string): Promise<string[]> {
+  const rows = await prisma.targetDomain.findMany({
+    where: { userId },
+    orderBy: { createdAt: 'desc' },
+    select: { domain: true },
+  });
   return rows.map((r) => r.domain);
 }
 
-export function addTargetDomain(domain: string): void {
-  const clean = domain.toLowerCase().trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
-  getDb().prepare('INSERT OR IGNORE INTO target_domains (domain, created_at) VALUES (?, ?)').run(clean, Date.now());
+export async function addTargetDomain(userId: string, domain: string): Promise<void> {
+  const clean = cleanDomain(domain);
+  await prisma.targetDomain.upsert({
+    where: { userId_domain: { userId, domain: clean } },
+    update: {},
+    create: { userId, domain: clean },
+  });
 }
 
-export function removeTargetDomain(domain: string): void {
-  getDb().prepare('DELETE FROM target_domains WHERE domain = ?').run(domain);
+export async function removeTargetDomain(userId: string, domain: string): Promise<void> {
+  await prisma.targetDomain.deleteMany({ where: { userId, domain } });
 }
 
 // --- SERP history ---
@@ -325,27 +119,52 @@ export interface SerpHistoryEntry {
   targetHits?: TargetHit[];
 }
 
-export function getSerpHistory(): SerpHistoryEntry[] {
-  const rows = getDb()
-    .prepare('SELECT id, ts, keyword, location, language, device, depth, result_count, target_hits FROM serp_searches ORDER BY ts DESC LIMIT 30')
-    .all() as Array<{ id: string; ts: number; keyword: string; location: string; language: string; device: string; depth: number; result_count: number; target_hits: string | null }>;
+export async function getSerpHistory(userId: string): Promise<SerpHistoryEntry[]> {
+  const rows = await prisma.serpSearch.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 30,
+    select: {
+      id: true, ts: true, keyword: true, location: true, language: true,
+      device: true, depth: true, resultCount: true, targetHits: true,
+    },
+  });
   return rows.map((r) => ({
-    ...r,
-    count: r.result_count,
-    targetHits: r.target_hits ? JSON.parse(r.target_hits) : undefined,
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    keyword: r.keyword,
+    location: r.location,
+    language: r.language,
+    device: r.device,
+    depth: r.depth,
+    count: r.resultCount,
+    targetHits: (r.targetHits as TargetHit[] | null) ?? undefined,
   }));
 }
 
-export function saveSerpSearch<T>(entry: SerpHistoryEntry, items: T[]): void {
-  getDb()
-    .prepare('INSERT OR REPLACE INTO serp_searches (id, ts, keyword, location, language, device, depth, result_count, items, target_hits) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(entry.id, entry.ts, entry.keyword, entry.location, entry.language, entry.device, entry.depth, entry.count, JSON.stringify(items), entry.targetHits ? JSON.stringify(entry.targetHits) : null);
+export async function saveSerpSearch<T>(userId: string, entry: SerpHistoryEntry, items: T[]): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(entry.ts),
+    keyword: entry.keyword,
+    location: entry.location,
+    language: entry.language,
+    device: entry.device,
+    depth: entry.depth,
+    resultCount: entry.count,
+    items: toJson(items),
+    targetHits: toNullableJson(entry.targetHits),
+  };
+  await prisma.serpSearch.upsert({
+    where: { id: entry.id },
+    update: data,
+    create: { id: entry.id, ...data },
+  });
 }
 
-export function getSerpResults<T>(id: string): T[] | null {
-  const row = getDb().prepare('SELECT items FROM serp_searches WHERE id = ?').get(id) as { items: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.items) as T[]; } catch { return null; }
+export async function getSerpResults<T>(userId: string, id: string): Promise<T[] | null> {
+  const row = await prisma.serpSearch.findFirst({ where: { id, userId }, select: { items: true } });
+  return (row?.items as T[] | undefined) ?? null;
 }
 
 // --- Keyword Data history ---
@@ -361,26 +180,47 @@ export interface KdHistoryEntry {
   params: Record<string, string>;
 }
 
-export function getKdHistory(): KdHistoryEntry[] {
-  const rows = getDb()
-    .prepare('SELECT id, ts, se, se_type, label, result_count, cost, params FROM kd_searches ORDER BY ts DESC LIMIT 30')
-    .all() as Array<{ id: string; ts: number; se: string; se_type: string; label: string; result_count: number; cost: number | null; params: string }>;
+export async function getKdHistory(userId: string): Promise<KdHistoryEntry[]> {
+  const rows = await prisma.kdSearch.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 30,
+    select: { id: true, ts: true, se: true, seType: true, label: true, resultCount: true, cost: true, params: true },
+  });
   return rows.map((r) => ({
-    id: r.id, ts: r.ts, se: r.se, seType: r.se_type, label: r.label,
-    count: r.result_count, cost: r.cost ?? undefined, params: JSON.parse(r.params),
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    se: r.se,
+    seType: r.seType,
+    label: r.label,
+    count: r.resultCount,
+    cost: r.cost ?? undefined,
+    params: r.params as Record<string, string>,
   }));
 }
 
-export function saveKdSearch<T>(entry: KdHistoryEntry, items: T[]): void {
-  getDb()
-    .prepare('INSERT OR REPLACE INTO kd_searches (id, ts, se, se_type, label, result_count, cost, params, items) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(entry.id, entry.ts, entry.se, entry.seType, entry.label, entry.count, entry.cost ?? null, JSON.stringify(entry.params), JSON.stringify(items));
+export async function saveKdSearch<T>(userId: string, entry: KdHistoryEntry, items: T[]): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(entry.ts),
+    se: entry.se,
+    seType: entry.seType,
+    label: entry.label,
+    resultCount: entry.count,
+    cost: entry.cost ?? null,
+    params: toJson(entry.params),
+    items: toJson(items),
+  };
+  await prisma.kdSearch.upsert({
+    where: { id: entry.id },
+    update: data,
+    create: { id: entry.id, ...data },
+  });
 }
 
-export function getKdResults<T>(id: string): T[] | null {
-  const row = getDb().prepare('SELECT items FROM kd_searches WHERE id = ?').get(id) as { items: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.items) as T[]; } catch { return null; }
+export async function getKdResults<T>(userId: string, id: string): Promise<T[] | null> {
+  const row = await prisma.kdSearch.findFirst({ where: { id, userId }, select: { items: true } });
+  return (row?.items as T[] | undefined) ?? null;
 }
 
 // --- Local Finder history ---
@@ -395,26 +235,45 @@ export interface LfHistoryEntry {
   params: Record<string, string>;
 }
 
-export function getLfHistory(): LfHistoryEntry[] {
-  const rows = getDb()
-    .prepare('SELECT id, ts, keyword, location, result_count, cost, params FROM lf_searches ORDER BY ts DESC LIMIT 30')
-    .all() as Array<{ id: string; ts: number; keyword: string; location: string; result_count: number; cost: number | null; params: string }>;
+export async function getLfHistory(userId: string): Promise<LfHistoryEntry[]> {
+  const rows = await prisma.lfSearch.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 30,
+    select: { id: true, ts: true, keyword: true, location: true, resultCount: true, cost: true, params: true },
+  });
   return rows.map((r) => ({
-    id: r.id, ts: r.ts, keyword: r.keyword, location: r.location,
-    count: r.result_count, cost: r.cost ?? undefined, params: JSON.parse(r.params),
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    keyword: r.keyword,
+    location: r.location,
+    count: r.resultCount,
+    cost: r.cost ?? undefined,
+    params: r.params as Record<string, string>,
   }));
 }
 
-export function saveLfSearch<T>(entry: LfHistoryEntry, items: T[]): void {
-  getDb()
-    .prepare('INSERT OR REPLACE INTO lf_searches (id, ts, keyword, location, result_count, cost, params, items) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(entry.id, entry.ts, entry.keyword, entry.location, entry.count, entry.cost ?? null, JSON.stringify(entry.params), JSON.stringify(items));
+export async function saveLfSearch<T>(userId: string, entry: LfHistoryEntry, items: T[]): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(entry.ts),
+    keyword: entry.keyword,
+    location: entry.location,
+    resultCount: entry.count,
+    cost: entry.cost ?? null,
+    params: toJson(entry.params),
+    items: toJson(items),
+  };
+  await prisma.lfSearch.upsert({
+    where: { id: entry.id },
+    update: data,
+    create: { id: entry.id, ...data },
+  });
 }
 
-export function getLfResults<T>(id: string): T[] | null {
-  const row = getDb().prepare('SELECT items FROM lf_searches WHERE id = ?').get(id) as { items: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.items) as T[]; } catch { return null; }
+export async function getLfResults<T>(userId: string, id: string): Promise<T[] | null> {
+  const row = await prisma.lfSearch.findFirst({ where: { id, userId }, select: { items: true } });
+  return (row?.items as T[] | undefined) ?? null;
 }
 
 // --- OnPage tasks ---
@@ -429,33 +288,51 @@ export interface OnpageTask {
   errorMessage?: string;
 }
 
-export function getOnpageTasks(): OnpageTask[] {
-  const rows = getDb().prepare('SELECT id, ts, url, target, status, cost, error_message FROM onpage_tasks ORDER BY ts DESC LIMIT 30').all() as Array<{
-    id: string; ts: number; url: string; target: string; status: string; cost: number | null; error_message: string | null;
-  }>;
+export async function getOnpageTasks(userId: string): Promise<OnpageTask[]> {
+  const rows = await prisma.onpageTask.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 30,
+    select: { id: true, ts: true, url: true, target: true, status: true, cost: true, errorMessage: true },
+  });
   return rows.map((r) => ({
-    id: r.id, ts: r.ts, url: r.url, target: r.target,
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    url: r.url,
+    target: r.target,
     status: r.status as OnpageTask['status'],
     cost: r.cost ?? undefined,
-    errorMessage: r.error_message ?? undefined,
+    errorMessage: r.errorMessage ?? undefined,
   }));
 }
 
-export function upsertOnpageTask(task: OnpageTask): void {
-  getDb().prepare(`
-    INSERT OR REPLACE INTO onpage_tasks (id, ts, url, target, status, cost, error_message)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(task.id, task.ts, task.url, task.target, task.status, task.cost ?? null, task.errorMessage ?? null);
+export async function upsertOnpageTask(userId: string, task: OnpageTask): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(task.ts),
+    url: task.url,
+    target: task.target,
+    status: task.status,
+    cost: task.cost ?? null,
+    errorMessage: task.errorMessage ?? null,
+  };
+  await prisma.onpageTask.upsert({
+    where: { id: task.id },
+    update: data,
+    create: { id: task.id, ...data },
+  });
 }
 
-export function getOnpageResult<T>(taskId: string): T | null {
-  const row = getDb().prepare('SELECT result FROM onpage_tasks WHERE id = ?').get(taskId) as { result: string | null } | undefined;
-  if (!row?.result) return null;
-  try { return JSON.parse(row.result) as T; } catch { return null; }
+export async function getOnpageResult<T>(userId: string, taskId: string): Promise<T | null> {
+  const row = await prisma.onpageTask.findFirst({ where: { id: taskId, userId }, select: { result: true } });
+  return (row?.result as T | null | undefined) ?? null;
 }
 
-export function saveOnpageResult<T>(taskId: string, result: T): void {
-  getDb().prepare('UPDATE onpage_tasks SET result = ?, status = ? WHERE id = ?').run(JSON.stringify(result), 'finished', taskId);
+export async function saveOnpageResult<T>(userId: string, taskId: string, result: T): Promise<void> {
+  await prisma.onpageTask.updateMany({
+    where: { id: taskId, userId },
+    data: { result: toJson(result), status: 'finished' },
+  });
 }
 
 // --- Ranked Keywords ---
@@ -471,26 +348,47 @@ export interface RankedKwSearchEntry {
   cost?: number;
 }
 
-export function getRankedKwHistory(): RankedKwSearchEntry[] {
-  const rows = getDb()
-    .prepare('SELECT id, ts, target, location, language, result_count, total_count, cost FROM ranked_kw_searches ORDER BY ts DESC LIMIT 30')
-    .all() as Array<{ id: string; ts: number; target: string; location: string; language: string; result_count: number; total_count: number; cost: number | null }>;
+export async function getRankedKwHistory(userId: string): Promise<RankedKwSearchEntry[]> {
+  const rows = await prisma.rankedKwSearch.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 30,
+    select: { id: true, ts: true, target: true, location: true, language: true, resultCount: true, totalCount: true, cost: true },
+  });
   return rows.map((r) => ({
-    id: r.id, ts: r.ts, target: r.target, location: r.location, language: r.language,
-    count: r.result_count, totalCount: r.total_count, cost: r.cost ?? undefined,
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    target: r.target,
+    location: r.location,
+    language: r.language,
+    count: r.resultCount,
+    totalCount: r.totalCount,
+    cost: r.cost ?? undefined,
   }));
 }
 
-export function saveRankedKwSearch<T>(entry: RankedKwSearchEntry, items: T[]): void {
-  getDb()
-    .prepare('INSERT OR REPLACE INTO ranked_kw_searches (id, ts, target, location, language, result_count, total_count, cost, items) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(entry.id, entry.ts, entry.target, entry.location, entry.language, entry.count, entry.totalCount, entry.cost ?? null, JSON.stringify(items));
+export async function saveRankedKwSearch<T>(userId: string, entry: RankedKwSearchEntry, items: T[]): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(entry.ts),
+    target: entry.target,
+    location: entry.location,
+    language: entry.language,
+    resultCount: entry.count,
+    totalCount: entry.totalCount,
+    cost: entry.cost ?? null,
+    items: toJson(items),
+  };
+  await prisma.rankedKwSearch.upsert({
+    where: { id: entry.id },
+    update: data,
+    create: { id: entry.id, ...data },
+  });
 }
 
-export function getRankedKwResults<T>(id: string): T[] | null {
-  const row = getDb().prepare('SELECT items FROM ranked_kw_searches WHERE id = ?').get(id) as { items: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.items) as T[]; } catch { return null; }
+export async function getRankedKwResults<T>(userId: string, id: string): Promise<T[] | null> {
+  const row = await prisma.rankedKwSearch.findFirst({ where: { id, userId }, select: { items: true } });
+  return (row?.items as T[] | undefined) ?? null;
 }
 
 // --- Keyword Overview ---
@@ -505,26 +403,45 @@ export interface KwOverviewSearchEntry {
   cost?: number;
 }
 
-export function getKwOverviewHistory(): KwOverviewSearchEntry[] {
-  const rows = getDb()
-    .prepare('SELECT id, ts, keywords, location, language, result_count, cost FROM kw_overview_searches ORDER BY ts DESC LIMIT 30')
-    .all() as Array<{ id: string; ts: number; keywords: string; location: string; language: string; result_count: number; cost: number | null }>;
+export async function getKwOverviewHistory(userId: string): Promise<KwOverviewSearchEntry[]> {
+  const rows = await prisma.kwOverviewSearch.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 30,
+    select: { id: true, ts: true, keywords: true, location: true, language: true, resultCount: true, cost: true },
+  });
   return rows.map((r) => ({
-    id: r.id, ts: r.ts, keywords: r.keywords, location: r.location, language: r.language,
-    count: r.result_count, cost: r.cost ?? undefined,
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    keywords: r.keywords as unknown as string,
+    location: r.location,
+    language: r.language,
+    count: r.resultCount,
+    cost: r.cost ?? undefined,
   }));
 }
 
-export function saveKwOverviewSearch<T>(entry: KwOverviewSearchEntry, items: T[]): void {
-  getDb()
-    .prepare('INSERT OR REPLACE INTO kw_overview_searches (id, ts, keywords, location, language, result_count, cost, items) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(entry.id, entry.ts, entry.keywords, entry.location, entry.language, entry.count, entry.cost ?? null, JSON.stringify(items));
+export async function saveKwOverviewSearch<T>(userId: string, entry: KwOverviewSearchEntry, items: T[]): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(entry.ts),
+    keywords: toJson(entry.keywords),
+    location: entry.location,
+    language: entry.language,
+    resultCount: entry.count,
+    cost: entry.cost ?? null,
+    items: toJson(items),
+  };
+  await prisma.kwOverviewSearch.upsert({
+    where: { id: entry.id },
+    update: data,
+    create: { id: entry.id, ...data },
+  });
 }
 
-export function getKwOverviewResults<T>(id: string): T[] | null {
-  const row = getDb().prepare('SELECT items FROM kw_overview_searches WHERE id = ?').get(id) as { items: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.items) as T[]; } catch { return null; }
+export async function getKwOverviewResults<T>(userId: string, id: string): Promise<T[] | null> {
+  const row = await prisma.kwOverviewSearch.findFirst({ where: { id, userId }, select: { items: true } });
+  return (row?.items as T[] | undefined) ?? null;
 }
 
 // --- Backlinks ---
@@ -537,29 +454,53 @@ export interface BacklinksSearchEntry {
   linksTotal?: number;
 }
 
-export function getBacklinksHistory(): BacklinksSearchEntry[] {
-  const rows = getDb()
-    .prepare('SELECT id, ts, target, cost, links_total FROM backlinks_searches ORDER BY ts DESC LIMIT 30')
-    .all() as Array<{ id: string; ts: number; target: string; cost: number | null; links_total: number | null }>;
-  return rows.map((r) => ({ id: r.id, ts: r.ts, target: r.target, cost: r.cost ?? undefined, linksTotal: r.links_total ?? undefined }));
+export async function getBacklinksHistory(userId: string): Promise<BacklinksSearchEntry[]> {
+  const rows = await prisma.backlinksSearch.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 30,
+    select: { id: true, ts: true, target: true, cost: true, linksTotal: true },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    target: r.target,
+    cost: r.cost ?? undefined,
+    linksTotal: r.linksTotal ?? undefined,
+  }));
 }
 
-export function saveBacklinksSearch<T, L>(entry: BacklinksSearchEntry, result: T, links?: L[], linksTotal?: number): void {
-  getDb()
-    .prepare('INSERT OR REPLACE INTO backlinks_searches (id, ts, target, cost, result, links, links_total) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(entry.id, entry.ts, entry.target, entry.cost ?? null, JSON.stringify(result), links ? JSON.stringify(links) : null, linksTotal ?? null);
+export async function saveBacklinksSearch<T, L>(
+  userId: string,
+  entry: BacklinksSearchEntry,
+  result: T,
+  links?: L[],
+  linksTotal?: number,
+): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(entry.ts),
+    target: entry.target,
+    cost: entry.cost ?? null,
+    result: toJson(result),
+    links: toNullableJson(links),
+    linksTotal: linksTotal ?? null,
+  };
+  await prisma.backlinksSearch.upsert({
+    where: { id: entry.id },
+    update: data,
+    create: { id: entry.id, ...data },
+  });
 }
 
-export function getBacklinksResult<T>(id: string): T | null {
-  const row = getDb().prepare('SELECT result FROM backlinks_searches WHERE id = ?').get(id) as { result: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.result) as T; } catch { return null; }
+export async function getBacklinksResult<T>(userId: string, id: string): Promise<T | null> {
+  const row = await prisma.backlinksSearch.findFirst({ where: { id, userId }, select: { result: true } });
+  return (row?.result as T | undefined) ?? null;
 }
 
-export function getBacklinksLinks<T>(id: string): T[] | null {
-  const row = getDb().prepare('SELECT links FROM backlinks_searches WHERE id = ?').get(id) as { links: string | null } | undefined;
-  if (!row?.links) return null;
-  try { return JSON.parse(row.links) as T[]; } catch { return null; }
+export async function getBacklinksLinks<T>(userId: string, id: string): Promise<T[] | null> {
+  const row = await prisma.backlinksSearch.findFirst({ where: { id, userId }, select: { links: true } });
+  return (row?.links as T[] | null | undefined) ?? null;
 }
 
 // --- Competitors ---
@@ -574,32 +515,52 @@ export interface CompetitorsSearchEntry {
   cost?: number;
 }
 
-export function getCompetitorsHistory(): CompetitorsSearchEntry[] {
-  const rows = getDb()
-    .prepare('SELECT id, ts, target, location, language, result_count, cost FROM competitors_searches ORDER BY ts DESC LIMIT 30')
-    .all() as Array<{ id: string; ts: number; target: string; location: string; language: string; result_count: number; cost: number | null }>;
+export async function getCompetitorsHistory(userId: string): Promise<CompetitorsSearchEntry[]> {
+  const rows = await prisma.competitorsSearch.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 30,
+    select: { id: true, ts: true, target: true, location: true, language: true, resultCount: true, cost: true },
+  });
   return rows.map((r) => ({
-    id: r.id, ts: r.ts, target: r.target, location: r.location, language: r.language,
-    count: r.result_count, cost: r.cost ?? undefined,
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    target: r.target,
+    location: r.location,
+    language: r.language,
+    count: r.resultCount,
+    cost: r.cost ?? undefined,
   }));
 }
 
-export function saveCompetitorsSearch<T>(entry: CompetitorsSearchEntry, items: T[]): void {
-  getDb()
-    .prepare('INSERT OR REPLACE INTO competitors_searches (id, ts, target, location, language, result_count, cost, items) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(entry.id, entry.ts, entry.target, entry.location, entry.language, entry.count, entry.cost ?? null, JSON.stringify(items));
+export async function saveCompetitorsSearch<T>(userId: string, entry: CompetitorsSearchEntry, items: T[]): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(entry.ts),
+    target: entry.target,
+    location: entry.location,
+    language: entry.language,
+    resultCount: entry.count,
+    cost: entry.cost ?? null,
+    items: toJson(items),
+  };
+  await prisma.competitorsSearch.upsert({
+    where: { id: entry.id },
+    update: data,
+    create: { id: entry.id, ...data },
+  });
 }
 
-export function getCompetitorsResults<T>(id: string): T[] | null {
-  const row = getDb().prepare('SELECT items FROM competitors_searches WHERE id = ?').get(id) as { items: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.items) as T[]; } catch { return null; }
+export async function getCompetitorsResults<T>(userId: string, id: string): Promise<T[] | null> {
+  const row = await prisma.competitorsSearch.findFirst({ where: { id, userId }, select: { items: true } });
+  return (row?.items as T[] | undefined) ?? null;
 }
 
 // --- Rank Tracker ---
+// NOTE: TrackedKeyword.id + RankCheck.keywordId are now string (cuid), not int.
 
 export interface TrackedKeyword {
-  id: number;
+  id: string;
   keyword: string;
   domain: string;
   location: string;
@@ -608,8 +569,8 @@ export interface TrackedKeyword {
 }
 
 export interface RankCheck {
-  id: number;
-  keywordId: number;
+  id: string;
+  keywordId: string;
   checkedAt: number;
   date: string;
   position: number | null;
@@ -618,55 +579,109 @@ export interface RankCheck {
   cost: number | null;
 }
 
-export function getTrackedKeywords(): TrackedKeyword[] {
-  const rows = getDb().prepare('SELECT id, keyword, domain, location, language, created_at FROM tracked_keywords ORDER BY created_at DESC').all() as Array<{
-    id: number; keyword: string; domain: string; location: string; language: string; created_at: number;
-  }>;
-  return rows.map((r) => ({ id: r.id, keyword: r.keyword, domain: r.domain, location: r.location, language: r.language, createdAt: r.created_at }));
+export async function getTrackedKeywords(userId: string): Promise<TrackedKeyword[]> {
+  const rows = await prisma.trackedKeyword.findMany({
+    where: { userId },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, keyword: true, domain: true, location: true, language: true, createdAt: true },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    keyword: r.keyword,
+    domain: r.domain,
+    location: r.location,
+    language: r.language,
+    createdAt: r.createdAt.getTime(),
+  }));
 }
 
-export function addTrackedKeyword(keyword: string, domain: string, location: string, language: string): number {
-  const result = getDb().prepare(
-    'INSERT OR IGNORE INTO tracked_keywords (keyword, domain, location, language, created_at) VALUES (?, ?, ?, ?, ?)'
-  ).run(keyword.trim(), domain.trim(), location, language, Date.now());
-  if (result.changes === 0) {
-    const row = getDb().prepare('SELECT id FROM tracked_keywords WHERE keyword = ? AND domain = ? AND location = ? AND language = ?').get(keyword.trim(), domain.trim(), location, language) as { id: number };
-    return row.id;
-  }
-  return result.lastInsertRowid as number;
+export async function addTrackedKeyword(
+  userId: string,
+  keyword: string,
+  domain: string,
+  location: string,
+  language: string,
+): Promise<string> {
+  const k = keyword.trim();
+  const d = domain.trim();
+  const row = await prisma.trackedKeyword.upsert({
+    where: {
+      userId_keyword_domain_location_language: { userId, keyword: k, domain: d, location, language },
+    },
+    update: {},
+    create: { userId, keyword: k, domain: d, location, language },
+    select: { id: true },
+  });
+  return row.id;
 }
 
-export function removeTrackedKeyword(id: number): void {
-  getDb().prepare('DELETE FROM tracked_keywords WHERE id = ?').run(id);
+export async function removeTrackedKeyword(userId: string, id: string): Promise<void> {
+  await prisma.trackedKeyword.deleteMany({ where: { id, userId } });
 }
 
-export function saveRankCheck(keywordId: number, position: number | null, url: string | null, title: string | null, cost: number | null): void {
+export async function saveRankCheck(
+  userId: string,
+  keywordId: string,
+  position: number | null,
+  url: string | null,
+  title: string | null,
+  cost: number | null,
+): Promise<void> {
+  // Ownership check — prevents writes against a keyword that isn't ours.
+  const kw = await prisma.trackedKeyword.findFirst({ where: { id: keywordId, userId }, select: { id: true } });
+  if (!kw) return;
+
   const now = Date.now();
   const date = new Date(now).toISOString().split('T')[0];
-  // Only one check per day per keyword — upsert by date
-  const existing = getDb().prepare('SELECT id FROM rank_checks WHERE keyword_id = ? AND date = ?').get(keywordId, date) as { id: number } | undefined;
-  if (existing) {
-    getDb().prepare('UPDATE rank_checks SET checked_at = ?, position = ?, url = ?, title = ?, cost = ? WHERE id = ?')
-      .run(now, position, url, title, cost, existing.id);
-  } else {
-    getDb().prepare('INSERT INTO rank_checks (keyword_id, checked_at, date, position, url, title, cost) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(keywordId, now, date, position, url, title, cost);
-  }
+  await prisma.rankCheck.upsert({
+    where: { keywordId_date: { keywordId, date } },
+    update: { checkedAt: toBigInt(now), position, url, title, cost },
+    create: { keywordId, checkedAt: toBigInt(now), date, position, url, title, cost },
+  });
 }
 
-export function getRankHistory(keywordId: number, days = 30): RankCheck[] {
-  const rows = getDb().prepare(
-    'SELECT id, keyword_id, checked_at, date, position, url, title, cost FROM rank_checks WHERE keyword_id = ? ORDER BY date DESC LIMIT ?'
-  ).all(keywordId, days) as Array<{ id: number; keyword_id: number; checked_at: number; date: string; position: number | null; url: string | null; title: string | null; cost: number | null }>;
-  return rows.map((r) => ({ id: r.id, keywordId: r.keyword_id, checkedAt: r.checked_at, date: r.date, position: r.position, url: r.url, title: r.title, cost: r.cost }));
+export async function getRankHistory(userId: string, keywordId: string, days = 30): Promise<RankCheck[]> {
+  const kw = await prisma.trackedKeyword.findFirst({ where: { id: keywordId, userId }, select: { id: true } });
+  if (!kw) return [];
+
+  const rows = await prisma.rankCheck.findMany({
+    where: { keywordId },
+    orderBy: { date: 'desc' },
+    take: days,
+    select: { id: true, keywordId: true, checkedAt: true, date: true, position: true, url: true, title: true, cost: true },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    keywordId: r.keywordId,
+    checkedAt: fromBigInt(r.checkedAt),
+    date: r.date,
+    position: r.position,
+    url: r.url,
+    title: r.title,
+    cost: r.cost,
+  }));
 }
 
-export function getLatestRankCheck(keywordId: number): RankCheck | null {
-  const row = getDb().prepare(
-    'SELECT id, keyword_id, checked_at, date, position, url, title, cost FROM rank_checks WHERE keyword_id = ? ORDER BY date DESC LIMIT 1'
-  ).get(keywordId) as { id: number; keyword_id: number; checked_at: number; date: string; position: number | null; url: string | null; title: string | null; cost: number | null } | undefined;
-  if (!row) return null;
-  return { id: row.id, keywordId: row.keyword_id, checkedAt: row.checked_at, date: row.date, position: row.position, url: row.url, title: row.title, cost: row.cost };
+export async function getLatestRankCheck(userId: string, keywordId: string): Promise<RankCheck | null> {
+  const kw = await prisma.trackedKeyword.findFirst({ where: { id: keywordId, userId }, select: { id: true } });
+  if (!kw) return null;
+
+  const r = await prisma.rankCheck.findFirst({
+    where: { keywordId },
+    orderBy: { date: 'desc' },
+    select: { id: true, keywordId: true, checkedAt: true, date: true, position: true, url: true, title: true, cost: true },
+  });
+  if (!r) return null;
+  return {
+    id: r.id,
+    keywordId: r.keywordId,
+    checkedAt: fromBigInt(r.checkedAt),
+    date: r.date,
+    position: r.position,
+    url: r.url,
+    title: r.title,
+    cost: r.cost,
+  };
 }
 
 // --- Referring Domains ---
@@ -679,22 +694,41 @@ export interface RefDomainsSearchEntry {
   total?: number;
 }
 
-export function getRefDomainsHistory(): RefDomainsSearchEntry[] {
-  const rows = getDb().prepare('SELECT id, ts, target, cost, total FROM ref_domains_searches ORDER BY ts DESC LIMIT 30').all() as Array<{
-    id: string; ts: number; target: string; cost: number | null; total: number | null;
-  }>;
-  return rows.map((r) => ({ id: r.id, ts: r.ts, target: r.target, cost: r.cost ?? undefined, total: r.total ?? undefined }));
+export async function getRefDomainsHistory(userId: string): Promise<RefDomainsSearchEntry[]> {
+  const rows = await prisma.refDomainsSearch.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 30,
+    select: { id: true, ts: true, target: true, cost: true, total: true },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    target: r.target,
+    cost: r.cost ?? undefined,
+    total: r.total ?? undefined,
+  }));
 }
 
-export function saveRefDomainsSearch<T>(entry: RefDomainsSearchEntry, items: T[]): void {
-  getDb().prepare('INSERT OR REPLACE INTO ref_domains_searches (id, ts, target, cost, total, items) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(entry.id, entry.ts, entry.target, entry.cost ?? null, entry.total ?? null, JSON.stringify(items));
+export async function saveRefDomainsSearch<T>(userId: string, entry: RefDomainsSearchEntry, items: T[]): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(entry.ts),
+    target: entry.target,
+    cost: entry.cost ?? null,
+    total: entry.total ?? 0,
+    items: toJson(items),
+  };
+  await prisma.refDomainsSearch.upsert({
+    where: { id: entry.id },
+    update: data,
+    create: { id: entry.id, ...data },
+  });
 }
 
-export function getRefDomainsResults<T>(id: string): T[] | null {
-  const row = getDb().prepare('SELECT items FROM ref_domains_searches WHERE id = ?').get(id) as { items: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.items) as T[]; } catch { return null; }
+export async function getRefDomainsResults<T>(userId: string, id: string): Promise<T[] | null> {
+  const row = await prisma.refDomainsSearch.findFirst({ where: { id, userId }, select: { items: true } });
+  return (row?.items as T[] | undefined) ?? null;
 }
 
 // --- Anchors ---
@@ -707,22 +741,41 @@ export interface AnchorsSearchEntry {
   total?: number;
 }
 
-export function getAnchorsHistory(): AnchorsSearchEntry[] {
-  const rows = getDb().prepare('SELECT id, ts, target, cost, total FROM anchors_searches ORDER BY ts DESC LIMIT 30').all() as Array<{
-    id: string; ts: number; target: string; cost: number | null; total: number | null;
-  }>;
-  return rows.map((r) => ({ id: r.id, ts: r.ts, target: r.target, cost: r.cost ?? undefined, total: r.total ?? undefined }));
+export async function getAnchorsHistory(userId: string): Promise<AnchorsSearchEntry[]> {
+  const rows = await prisma.anchorsSearch.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 30,
+    select: { id: true, ts: true, target: true, cost: true, total: true },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    target: r.target,
+    cost: r.cost ?? undefined,
+    total: r.total ?? undefined,
+  }));
 }
 
-export function saveAnchorsSearch<T>(entry: AnchorsSearchEntry, items: T[]): void {
-  getDb().prepare('INSERT OR REPLACE INTO anchors_searches (id, ts, target, cost, total, items) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(entry.id, entry.ts, entry.target, entry.cost ?? null, entry.total ?? null, JSON.stringify(items));
+export async function saveAnchorsSearch<T>(userId: string, entry: AnchorsSearchEntry, items: T[]): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(entry.ts),
+    target: entry.target,
+    cost: entry.cost ?? null,
+    total: entry.total ?? 0,
+    items: toJson(items),
+  };
+  await prisma.anchorsSearch.upsert({
+    where: { id: entry.id },
+    update: data,
+    create: { id: entry.id, ...data },
+  });
 }
 
-export function getAnchorsResults<T>(id: string): T[] | null {
-  const row = getDb().prepare('SELECT items FROM anchors_searches WHERE id = ?').get(id) as { items: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.items) as T[]; } catch { return null; }
+export async function getAnchorsResults<T>(userId: string, id: string): Promise<T[] | null> {
+  const row = await prisma.anchorsSearch.findFirst({ where: { id, userId }, select: { items: true } });
+  return (row?.items as T[] | undefined) ?? null;
 }
 
 // --- Historical Rank Overview ---
@@ -736,22 +789,43 @@ export interface HistRankSearchEntry {
   cost?: number;
 }
 
-export function getHistRankHistory(): HistRankSearchEntry[] {
-  const rows = getDb().prepare('SELECT id, ts, target, location, language, cost FROM hist_rank_searches ORDER BY ts DESC LIMIT 30').all() as Array<{
-    id: string; ts: number; target: string; location: string; language: string; cost: number | null;
-  }>;
-  return rows.map((r) => ({ id: r.id, ts: r.ts, target: r.target, location: r.location, language: r.language, cost: r.cost ?? undefined }));
+export async function getHistRankHistory(userId: string): Promise<HistRankSearchEntry[]> {
+  const rows = await prisma.histRankSearch.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 30,
+    select: { id: true, ts: true, target: true, location: true, language: true, cost: true },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    target: r.target,
+    location: r.location,
+    language: r.language,
+    cost: r.cost ?? undefined,
+  }));
 }
 
-export function saveHistRankSearch<T>(entry: HistRankSearchEntry, items: T[]): void {
-  getDb().prepare('INSERT OR REPLACE INTO hist_rank_searches (id, ts, target, location, language, cost, items) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(entry.id, entry.ts, entry.target, entry.location, entry.language, entry.cost ?? null, JSON.stringify(items));
+export async function saveHistRankSearch<T>(userId: string, entry: HistRankSearchEntry, items: T[]): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(entry.ts),
+    target: entry.target,
+    location: entry.location,
+    language: entry.language,
+    cost: entry.cost ?? null,
+    items: toJson(items),
+  };
+  await prisma.histRankSearch.upsert({
+    where: { id: entry.id },
+    update: data,
+    create: { id: entry.id, ...data },
+  });
 }
 
-export function getHistRankResults<T>(id: string): T[] | null {
-  const row = getDb().prepare('SELECT items FROM hist_rank_searches WHERE id = ?').get(id) as { items: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.items) as T[]; } catch { return null; }
+export async function getHistRankResults<T>(userId: string, id: string): Promise<T[] | null> {
+  const row = await prisma.histRankSearch.findFirst({ where: { id, userId }, select: { items: true } });
+  return (row?.items as T[] | undefined) ?? null;
 }
 
 // --- Domain Intersection ---
@@ -768,22 +842,53 @@ export interface DomainIntersectionSearchEntry {
   cost?: number;
 }
 
-export function getDomainIntersectionHistory(): DomainIntersectionSearchEntry[] {
-  const rows = getDb().prepare('SELECT id, ts, target1, target2, location, language, result_count, total_count, cost FROM domain_intersection_searches ORDER BY ts DESC LIMIT 30').all() as Array<{
-    id: string; ts: number; target1: string; target2: string; location: string; language: string; result_count: number; total_count: number; cost: number | null;
-  }>;
-  return rows.map((r) => ({ id: r.id, ts: r.ts, target1: r.target1, target2: r.target2, location: r.location, language: r.language, count: r.result_count, totalCount: r.total_count, cost: r.cost ?? undefined }));
+export async function getDomainIntersectionHistory(userId: string): Promise<DomainIntersectionSearchEntry[]> {
+  const rows = await prisma.domainIntersectionSearch.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 30,
+    select: { id: true, ts: true, target1: true, target2: true, location: true, language: true, resultCount: true, totalCount: true, cost: true },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    target1: r.target1,
+    target2: r.target2,
+    location: r.location,
+    language: r.language,
+    count: r.resultCount,
+    totalCount: r.totalCount,
+    cost: r.cost ?? undefined,
+  }));
 }
 
-export function saveDomainIntersectionSearch<T>(entry: DomainIntersectionSearchEntry, items: T[]): void {
-  getDb().prepare('INSERT OR REPLACE INTO domain_intersection_searches (id, ts, target1, target2, location, language, result_count, total_count, cost, items) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(entry.id, entry.ts, entry.target1, entry.target2, entry.location, entry.language, entry.count, entry.totalCount, entry.cost ?? null, JSON.stringify(items));
+export async function saveDomainIntersectionSearch<T>(
+  userId: string,
+  entry: DomainIntersectionSearchEntry,
+  items: T[],
+): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(entry.ts),
+    target1: entry.target1,
+    target2: entry.target2,
+    location: entry.location,
+    language: entry.language,
+    resultCount: entry.count,
+    totalCount: entry.totalCount,
+    cost: entry.cost ?? null,
+    items: toJson(items),
+  };
+  await prisma.domainIntersectionSearch.upsert({
+    where: { id: entry.id },
+    update: data,
+    create: { id: entry.id, ...data },
+  });
 }
 
-export function getDomainIntersectionResults<T>(id: string): T[] | null {
-  const row = getDb().prepare('SELECT items FROM domain_intersection_searches WHERE id = ?').get(id) as { items: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.items) as T[]; } catch { return null; }
+export async function getDomainIntersectionResults<T>(userId: string, id: string): Promise<T[] | null> {
+  const row = await prisma.domainIntersectionSearch.findFirst({ where: { id, userId }, select: { items: true } });
+  return (row?.items as T[] | undefined) ?? null;
 }
 
 // --- Keyword Difficulty ---
@@ -798,26 +903,45 @@ export interface KwDifficultySearchEntry {
   cost?: number;
 }
 
-export function getKwDifficultyHistory(): KwDifficultySearchEntry[] {
-  const rows = getDb()
-    .prepare('SELECT id, ts, keywords, location, language, result_count, cost FROM kw_difficulty_searches ORDER BY ts DESC LIMIT 30')
-    .all() as Array<{ id: string; ts: number; keywords: string; location: string; language: string; result_count: number; cost: number | null }>;
+export async function getKwDifficultyHistory(userId: string): Promise<KwDifficultySearchEntry[]> {
+  const rows = await prisma.kwDifficultySearch.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 30,
+    select: { id: true, ts: true, keywords: true, location: true, language: true, resultCount: true, cost: true },
+  });
   return rows.map((r) => ({
-    id: r.id, ts: r.ts, keywords: r.keywords, location: r.location, language: r.language,
-    count: r.result_count, cost: r.cost ?? undefined,
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    keywords: r.keywords as unknown as string,
+    location: r.location,
+    language: r.language,
+    count: r.resultCount,
+    cost: r.cost ?? undefined,
   }));
 }
 
-export function saveKwDifficultySearch<T>(entry: KwDifficultySearchEntry, items: T[]): void {
-  getDb()
-    .prepare('INSERT OR REPLACE INTO kw_difficulty_searches (id, ts, keywords, location, language, result_count, cost, items) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(entry.id, entry.ts, entry.keywords, entry.location, entry.language, entry.count, entry.cost ?? null, JSON.stringify(items));
+export async function saveKwDifficultySearch<T>(userId: string, entry: KwDifficultySearchEntry, items: T[]): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(entry.ts),
+    keywords: toJson(entry.keywords),
+    location: entry.location,
+    language: entry.language,
+    resultCount: entry.count,
+    cost: entry.cost ?? null,
+    items: toJson(items),
+  };
+  await prisma.kwDifficultySearch.upsert({
+    where: { id: entry.id },
+    update: data,
+    create: { id: entry.id, ...data },
+  });
 }
 
-export function getKwDifficultyResults<T>(id: string): T[] | null {
-  const row = getDb().prepare('SELECT items FROM kw_difficulty_searches WHERE id = ?').get(id) as { items: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.items) as T[]; } catch { return null; }
+export async function getKwDifficultyResults<T>(userId: string, id: string): Promise<T[] | null> {
+  const row = await prisma.kwDifficultySearch.findFirst({ where: { id, userId }, select: { items: true } });
+  return (row?.items as T[] | undefined) ?? null;
 }
 
 // --- Related Keywords ---
@@ -833,26 +957,47 @@ export interface RelatedKwSearchEntry {
   cost?: number;
 }
 
-export function getRelatedKwHistory(): RelatedKwSearchEntry[] {
-  const rows = getDb()
-    .prepare('SELECT id, ts, keyword, location, language, depth, result_count, cost FROM related_kw_searches ORDER BY ts DESC LIMIT 30')
-    .all() as Array<{ id: string; ts: number; keyword: string; location: string; language: string; depth: number; result_count: number; cost: number | null }>;
+export async function getRelatedKwHistory(userId: string): Promise<RelatedKwSearchEntry[]> {
+  const rows = await prisma.relatedKwSearch.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 30,
+    select: { id: true, ts: true, keyword: true, location: true, language: true, depth: true, resultCount: true, cost: true },
+  });
   return rows.map((r) => ({
-    id: r.id, ts: r.ts, keyword: r.keyword, location: r.location, language: r.language,
-    depth: r.depth, count: r.result_count, cost: r.cost ?? undefined,
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    keyword: r.keyword,
+    location: r.location,
+    language: r.language,
+    depth: r.depth,
+    count: r.resultCount,
+    cost: r.cost ?? undefined,
   }));
 }
 
-export function saveRelatedKwSearch<T>(entry: RelatedKwSearchEntry, items: T[]): void {
-  getDb()
-    .prepare('INSERT OR REPLACE INTO related_kw_searches (id, ts, keyword, location, language, depth, result_count, cost, items) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(entry.id, entry.ts, entry.keyword, entry.location, entry.language, entry.depth, entry.count, entry.cost ?? null, JSON.stringify(items));
+export async function saveRelatedKwSearch<T>(userId: string, entry: RelatedKwSearchEntry, items: T[]): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(entry.ts),
+    keyword: entry.keyword,
+    location: entry.location,
+    language: entry.language,
+    depth: entry.depth,
+    resultCount: entry.count,
+    cost: entry.cost ?? null,
+    items: toJson(items),
+  };
+  await prisma.relatedKwSearch.upsert({
+    where: { id: entry.id },
+    update: data,
+    create: { id: entry.id, ...data },
+  });
 }
 
-export function getRelatedKwResults<T>(id: string): T[] | null {
-  const row = getDb().prepare('SELECT items FROM related_kw_searches WHERE id = ?').get(id) as { items: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.items) as T[]; } catch { return null; }
+export async function getRelatedKwResults<T>(userId: string, id: string): Promise<T[] | null> {
+  const row = await prisma.relatedKwSearch.findFirst({ where: { id, userId }, select: { items: true } });
+  return (row?.items as T[] | undefined) ?? null;
 }
 
 // --- Grid Search ---
@@ -887,26 +1032,49 @@ export interface GridPoint {
   items?: GridLocalItem[];
 }
 
-export function getGridHistory(): GridSearchEntry[] {
-  const rows = getDb()
-    .prepare('SELECT id, ts, keyword, target, center, grid_size, spacing_km, language, cost FROM grid_searches ORDER BY ts DESC LIMIT 20')
-    .all() as Array<{ id: string; ts: number; keyword: string; target: string; center: string; grid_size: number; spacing_km: number; language: string; cost: number | null }>;
+export async function getGridHistory(userId: string): Promise<GridSearchEntry[]> {
+  const rows = await prisma.gridSearch.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 20,
+    select: { id: true, ts: true, keyword: true, target: true, center: true, gridSize: true, spacingKm: true, language: true, cost: true },
+  });
   return rows.map((r) => ({
-    id: r.id, ts: r.ts, keyword: r.keyword, target: r.target, center: r.center,
-    grid_size: r.grid_size, spacing_km: r.spacing_km, language: r.language, cost: r.cost ?? undefined,
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    keyword: r.keyword,
+    target: r.target,
+    center: r.center,
+    grid_size: r.gridSize,
+    spacing_km: r.spacingKm,
+    language: r.language,
+    cost: r.cost ?? undefined,
   }));
 }
 
-export function saveGridSearch(entry: GridSearchEntry, results: GridPoint[]): void {
-  getDb()
-    .prepare('INSERT OR REPLACE INTO grid_searches (id, ts, keyword, target, center, grid_size, spacing_km, language, cost, results) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(entry.id, entry.ts, entry.keyword, entry.target, entry.center, entry.grid_size, entry.spacing_km, entry.language, entry.cost ?? null, JSON.stringify(results));
+export async function saveGridSearch(userId: string, entry: GridSearchEntry, results: GridPoint[]): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(entry.ts),
+    keyword: entry.keyword,
+    target: entry.target,
+    center: entry.center,
+    gridSize: entry.grid_size,
+    spacingKm: entry.spacing_km,
+    language: entry.language,
+    cost: entry.cost ?? null,
+    results: toJson(results),
+  };
+  await prisma.gridSearch.upsert({
+    where: { id: entry.id },
+    update: data,
+    create: { id: entry.id, ...data },
+  });
 }
 
-export function getGridResults(id: string): GridPoint[] | null {
-  const row = getDb().prepare('SELECT results FROM grid_searches WHERE id = ?').get(id) as { results: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.results) as GridPoint[]; } catch { return null; }
+export async function getGridResults(userId: string, id: string): Promise<GridPoint[] | null> {
+  const row = await prisma.gridSearch.findFirst({ where: { id, userId }, select: { results: true } });
+  return (row?.results as GridPoint[] | undefined) ?? null;
 }
 
 // --- Instant Pages ---
@@ -918,23 +1086,39 @@ export interface InstantPageEntry {
   cost?: number;
 }
 
-export function getInstantPageHistory(): InstantPageEntry[] {
-  const rows = getDb()
-    .prepare('SELECT id, ts, url, cost FROM instant_page_searches ORDER BY ts DESC LIMIT 30')
-    .all() as Array<{ id: string; ts: number; url: string; cost: number | null }>;
-  return rows.map((r) => ({ id: r.id, ts: r.ts, url: r.url, cost: r.cost ?? undefined }));
+export async function getInstantPageHistory(userId: string): Promise<InstantPageEntry[]> {
+  const rows = await prisma.instantPageSearch.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 30,
+    select: { id: true, ts: true, url: true, cost: true },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    url: r.url,
+    cost: r.cost ?? undefined,
+  }));
 }
 
-export function saveInstantPageResult<T>(entry: InstantPageEntry, result: T): void {
-  getDb()
-    .prepare('INSERT OR REPLACE INTO instant_page_searches (id, ts, url, cost, result) VALUES (?, ?, ?, ?, ?)')
-    .run(entry.id, entry.ts, entry.url, entry.cost ?? null, JSON.stringify(result));
+export async function saveInstantPageResult<T>(userId: string, entry: InstantPageEntry, result: T): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(entry.ts),
+    url: entry.url,
+    cost: entry.cost ?? null,
+    result: toJson(result),
+  };
+  await prisma.instantPageSearch.upsert({
+    where: { id: entry.id },
+    update: data,
+    create: { id: entry.id, ...data },
+  });
 }
 
-export function getInstantPageResult<T>(id: string): T | null {
-  const row = getDb().prepare('SELECT result FROM instant_page_searches WHERE id = ?').get(id) as { result: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.result) as T; } catch { return null; }
+export async function getInstantPageResult<T>(userId: string, id: string): Promise<T | null> {
+  const row = await prisma.instantPageSearch.findFirst({ where: { id, userId }, select: { result: true } });
+  return (row?.result as T | undefined) ?? null;
 }
 
 // --- Reddit ---
@@ -947,23 +1131,41 @@ export interface RedditSearchEntry {
   cost?: number;
 }
 
-export function getRedditHistory(): RedditSearchEntry[] {
-  const rows = getDb()
-    .prepare('SELECT id, ts, targets, result_count, cost FROM reddit_searches ORDER BY ts DESC LIMIT 30')
-    .all() as Array<{ id: string; ts: number; targets: string; result_count: number; cost: number | null }>;
-  return rows.map((r) => ({ id: r.id, ts: r.ts, targets: r.targets, count: r.result_count, cost: r.cost ?? undefined }));
+export async function getRedditHistory(userId: string): Promise<RedditSearchEntry[]> {
+  const rows = await prisma.redditSearch.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 30,
+    select: { id: true, ts: true, targets: true, resultCount: true, cost: true },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    targets: r.targets as unknown as string,
+    count: r.resultCount,
+    cost: r.cost ?? undefined,
+  }));
 }
 
-export function saveRedditSearch<T>(entry: RedditSearchEntry, items: T[]): void {
-  getDb()
-    .prepare('INSERT OR REPLACE INTO reddit_searches (id, ts, targets, result_count, cost, items) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(entry.id, entry.ts, entry.targets, entry.count, entry.cost ?? null, JSON.stringify(items));
+export async function saveRedditSearch<T>(userId: string, entry: RedditSearchEntry, items: T[]): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(entry.ts),
+    targets: toJson(entry.targets),
+    resultCount: entry.count,
+    cost: entry.cost ?? null,
+    items: toJson(items),
+  };
+  await prisma.redditSearch.upsert({
+    where: { id: entry.id },
+    update: data,
+    create: { id: entry.id, ...data },
+  });
 }
 
-export function getRedditResults<T>(id: string): T[] | null {
-  const row = getDb().prepare('SELECT items FROM reddit_searches WHERE id = ?').get(id) as { items: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.items) as T[]; } catch { return null; }
+export async function getRedditResults<T>(userId: string, id: string): Promise<T[] | null> {
+  const row = await prisma.redditSearch.findFirst({ where: { id, userId }, select: { items: true } });
+  return (row?.items as T[] | undefined) ?? null;
 }
 
 // --- Google Reviews ---
@@ -981,31 +1183,75 @@ export interface ReviewsTask {
   resultCount?: number;
 }
 
-export function saveReviewsTask(id: string, business: string, location: string, language: string, depth: number, sortBy: string, cost?: number): void {
-  getDb()
-    .prepare('INSERT OR REPLACE INTO reviews_tasks (id, ts, business, location, language, depth, sort_by, status, cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, Date.now(), business, location, language, depth, sortBy, 'pending', cost ?? null);
+export async function saveReviewsTask(
+  userId: string,
+  id: string,
+  business: string,
+  location: string,
+  language: string,
+  depth: number,
+  sortBy: string,
+  cost?: number,
+): Promise<void> {
+  const data = {
+    userId,
+    ts: toBigInt(Date.now()),
+    business,
+    location,
+    language,
+    depth,
+    sortBy,
+    status: 'pending',
+    cost: cost ?? null,
+  };
+  await prisma.reviewsTask.upsert({
+    where: { id },
+    update: data,
+    create: { id, ...data },
+  });
 }
 
-export function getReviewsTasks(): ReviewsTask[] {
-  const rows = getDb()
-    .prepare('SELECT id, ts, business, location, language, depth, sort_by, status, cost, result_count FROM reviews_tasks ORDER BY ts DESC LIMIT 30')
-    .all() as Array<{ id: string; ts: number; business: string; location: string; language: string; depth: number; sort_by: string; status: string; cost: number | null; result_count: number | null }>;
+export async function getReviewsTasks(userId: string): Promise<ReviewsTask[]> {
+  const rows = await prisma.reviewsTask.findMany({
+    where: { userId },
+    orderBy: { ts: 'desc' },
+    take: 30,
+    select: { id: true, ts: true, business: true, location: true, language: true, depth: true, sortBy: true, status: true, cost: true, resultCount: true },
+  });
   return rows.map((r) => ({
-    id: r.id, ts: r.ts, business: r.business, location: r.location, language: r.language,
-    depth: r.depth, sortBy: r.sort_by, status: r.status as ReviewsTask['status'],
-    cost: r.cost ?? undefined, resultCount: r.result_count ?? undefined,
+    id: r.id,
+    ts: fromBigInt(r.ts),
+    business: r.business,
+    location: r.location,
+    language: r.language,
+    depth: r.depth,
+    sortBy: r.sortBy,
+    status: r.status as ReviewsTask['status'],
+    cost: r.cost ?? undefined,
+    resultCount: r.resultCount ?? undefined,
   }));
 }
 
-export function updateReviewsTask(id: string, status: ReviewsTask['status'], items: unknown[], cost?: number, resultCount?: number): void {
-  getDb()
-    .prepare('UPDATE reviews_tasks SET status = ?, result = ?, cost = ?, result_count = ? WHERE id = ?')
-    .run(status, JSON.stringify(items), cost ?? null, resultCount ?? items.length, id);
+export async function updateReviewsTask(
+  userId: string,
+  id: string,
+  status: ReviewsTask['status'],
+  items: unknown[],
+  cost?: number,
+  resultCount?: number,
+): Promise<void> {
+  await prisma.reviewsTask.updateMany({
+    where: { id, userId },
+    data: {
+      status,
+      result: toJson(items),
+      cost: cost ?? null,
+      resultCount: resultCount ?? items.length,
+    },
+  });
 }
 
-export function getReviewsTaskResult<T>(id: string): T[] | null {
-  const row = getDb().prepare('SELECT result FROM reviews_tasks WHERE id = ?').get(id) as { result: string | null } | undefined;
-  if (!row?.result) return null;
-  try { return JSON.parse(row.result) as T[]; } catch { return null; }
+export async function getReviewsTaskResult<T>(userId: string, id: string): Promise<T[] | null> {
+  const row = await prisma.reviewsTask.findFirst({ where: { id, userId }, select: { result: true } });
+  return (row?.result as T[] | undefined) ?? null;
 }

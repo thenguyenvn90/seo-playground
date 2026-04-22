@@ -1,4 +1,5 @@
 import { getCredentials, getKdHistory, saveKdSearch, getKdResults, type KdHistoryEntry } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import KeywordDataForm from './KeywordDataForm';
 
 interface KeywordItem {
@@ -89,7 +90,8 @@ function formatDate(ts: number) {
 }
 
 export default async function KeywordDataPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const creds = getCredentials();
+  const userId = await requireUserId();
+  const creds = await getCredentials(userId);
   const params = await searchParams;
   const historyId = params.history_id;
 
@@ -100,11 +102,11 @@ export default async function KeywordDataPage({ searchParams }: { searchParams: 
   let activeEntry: KdHistoryEntry | null = null;
 
   if (historyId) {
-    const saved = getKdResults<KeywordItem>(historyId);
+    const saved = await getKdResults<KeywordItem>(userId, historyId);
     if (saved) {
       items = saved;
       isFromHistory = true;
-      const index = getKdHistory();
+      const index = await getKdHistory(userId);
       activeEntry = index.find((e) => e.id === historyId) ?? null;
     } else {
       error = 'Cette recherche n\'est plus disponible.';
@@ -138,12 +140,12 @@ export default async function KeywordDataPage({ searchParams }: { searchParams: 
             Object.entries(params).filter(([k, v]) => k !== 'history_id' && v !== undefined)
           ) as Record<string, string>,
         };
-        saveKdSearch(entry, items);
+        await saveKdSearch(userId, entry, items);
       }
     }
   }
 
-  const historyIndex = getKdHistory();
+  const historyIndex = await getKdHistory(userId);
   const sourceParams = activeEntry?.params ?? (params as Record<string, string | undefined>);
   const formDefaults = {
     se: sourceParams.se ?? 'google_ads', seType: sourceParams.se_type ?? 'search_volume',

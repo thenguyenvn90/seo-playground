@@ -1,16 +1,19 @@
-'use server'
+'use server';
 
 import { addTargetDomain, removeTargetDomain } from '@/lib/db';
+import { requireUserId } from '@/lib/session';
 import { revalidatePath } from 'next/cache';
 
 export async function addDomainAction(formData: FormData) {
+  const userId = await requireUserId();
   const domain = (formData.get('domain') as string)?.trim();
   if (!domain) return;
-  addTargetDomain(domain);
+  await addTargetDomain(userId, domain);
   revalidatePath('/dashboard/serp');
 }
 
 export async function removeDomainAction(domain: string) {
-  removeTargetDomain(domain);
+  const userId = await requireUserId();
+  await removeTargetDomain(userId, domain);
   revalidatePath('/dashboard/serp');
 }
